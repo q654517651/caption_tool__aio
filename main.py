@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-精简版图像打标系统
+精简版图像打标系统 - 改进的归一化功能
 """
 
 import gradio as gr
@@ -32,6 +32,10 @@ class SimpleImageLabelingSystem:
         self.current_folder = ""
         self.images = []
         self.labels = {}
+
+        # 归一化相关
+        self.normalization_analysis = None
+        self.normalization_preview = {}
 
         # AI打标模块
         self.ai_labeler = AILabeler()
@@ -225,8 +229,8 @@ class SimpleImageLabelingSystem:
             log_error(error_msg)
             return error_msg
 
-    def normalize_tags(self) -> str:
-        """标签归一化"""
+    def analyze_normalization(self, model_type: str) -> Tuple[str, str]:
+        """分析归一化规则，返回规则描述和对比表格"""
         try:
             # 收集所有标签
             all_labels = {}
@@ -235,35 +239,169 @@ class SimpleImageLabelingSystem:
                     all_labels[os.path.basename(img_path)] = label_text
 
             if not all_labels:
-                return "没有标签需要归一化"
+                return "没有标签需要归一化", ""
 
             # 调用AI分析需要归一化的标签
-            normalization_result = self.tag_normalizer.analyze_normalization(all_labels, self.config['model_type'])
+            self.normalization_analysis = self.tag_normalizer.analyze_normalization(all_labels, model_type)
 
-            if isinstance(normalization_result, dict) and 'normalized_labels' in normalization_result:
-                # 应用归一化结果
-                changes_count = 0
-                for img_name, new_label in normalization_result['normalized_labels'].items():
-                    for img_path in self.images:
-                        if os.path.basename(img_path) == img_name:
-                            if self.labels[img_path] != new_label:
-                                self.labels[img_path] = new_label
-                                changes_count += 1
+            if isinstance(self.normalization_analysis, dict) and 'normalized_labels' in self.normalization_analysis:
+                # 生成规则描述
+                rules_html = self._generate_rules_display()
+                # 生成对比表格
+                comparison_html = self._generate_comparison_table()
 
-                                # 保存到文件
-                                txt_path = os.path.splitext(img_path)[0] + '.txt'
-                                with open(txt_path, 'w', encoding='utf-8') as f:
-                                    f.write(new_label)
-                            break
-
-                return f"标签归一化完成，修改了 {changes_count} 个标签"
+                return rules_html, comparison_html
             else:
-                return "标签归一化分析失败"
+                error_msg = f"分析失败: {self.normalization_analysis.get('error', '未知错误')}"
+                return error_msg, ""
 
         except Exception as e:
-            error_msg = f"标签归一化失败: {str(e)}"
+            error_msg = f"归一化分析失败: {str(e)}"
+            log_error(error_msg)
+            return error_msg, ""
+
+    def _generate_rules_display(self) -> str:
+        """生成归一化规则的HTML显示"""
+        if not self.normalization_analysis or 'suggestions' not in self.normalization_analysis:
+            return "<p>没有找到归一化建议</p>"
+
+        html_parts = ["""
+        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
+            <h3 style='color: #2c3e50; margin-bottom: 15px;'>🔍 归一化规则分析</h3>
+        """]
+
+        suggestions = self.normalization_analysis.get('suggestions', [])
+
+        if suggestions:
+            html_parts.append("<div style='margin-bottom: 20px;'>")
+            for i, suggestion in enumerate(suggestions, 1):
+                rule_item = f"""
+                <div style='background: white; padding: 12px; margin: 8px 0; border-left: 4px solid #3498db; border-radius: 4px;'>
+                    <h4 style='color: #2980b9; margin: 0 0 8px 0;'>规则 {i}</h4>
+                    <p style='margin: 5px 0;'><strong>原始表达:</strong> {suggestion.get('原始', 'N/A')}</p>
+                    <p style='margin: 5px 0;'><strong>建议修改:</strong> {suggestion.get('建议', 'N/A')}</p>
+                    <p style='margin: 5px 0; color: #7f8c8d;'><strong>修改原因:</strong> {suggestion.get('原因', 'N/A')}</p>
+                </div>
+                """
+                html_parts.append(rule_item)
+            html_parts.append("</div>")
+        else:
+            html_parts.append("<p>没有找到需要归一化的规则</p>")
+
+        # 统计信息
+        total_labels = len([l for l in self.labels.values() if l.strip()])
+        normalized_count = len(self.normalization_analysis.get('normalized_labels', {}))
+
+        stats = f"""
+        <div style='background: #e8f5e8; padding: 10px; border-radius: 5px; margin-top: 15px;'>
+            <h4 style='margin: 0 0 10px 0; color: #27ae60;'>📊 统计信息</h4>
+            <p style='margin: 5px 0;'>总标签数: {total_labels}</p>
+            <p style='margin: 5px 0;'>需要修改的标签: {normalized_count}</p>
+            <p style='margin: 5px 0;'>归一化规则数: {len(suggestions)}</p>
+        </div>
+        """
+        html_parts.append(stats)
+        html_parts.append("</div>")
+
+        return ''.join(html_parts)
+
+    def _generate_comparison_table(self) -> str:
+        """生成修改前后对比表格"""
+        if not self.normalization_analysis or 'normalized_labels' not in self.normalization_analysis:
+            return "<p>没有对比数据</p>"
+
+        normalized_labels = self.normalization_analysis['normalized_labels']
+
+        html_parts = ["""
+        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
+            <h3 style='color: #2c3e50; margin-bottom: 15px;'>📋 标签修改对比</h3>
+            <div style='overflow-x: auto;'>
+                <table style='width: 100%; border-collapse: collapse; background: white; border-radius: 5px; overflow: hidden;'>
+                    <thead>
+                        <tr style='background: #34495e; color: white;'>
+                            <th style='padding: 12px; text-align: left; width: 200px;'>图片名称</th>
+                            <th style='padding: 12px; text-align: left;'>修改前</th>
+                            <th style='padding: 12px; text-align: left;'>修改后</th>
+                            <th style='padding: 12px; text-align: center; width: 100px;'>状态</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """]
+
+        # 生成对比行
+        for img_path, original_label in self.labels.items():
+            if not original_label or not original_label.strip():
+                continue
+
+            img_name = os.path.basename(img_path)
+            normalized_label = normalized_labels.get(img_name, original_label)
+
+            # 判断是否有变化
+            has_changes = original_label != normalized_label
+            status_color = "#e74c3c" if has_changes else "#27ae60"
+            status_text = "需修改" if has_changes else "无变化"
+            row_bg = "#fff5f5" if has_changes else "#f0fff0"
+
+            row = f"""
+            <tr style='background: {row_bg}; border-bottom: 1px solid #ecf0f1;'>
+                <td style='padding: 12px; font-weight: bold; word-break: break-word;'>{img_name}</td>
+                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{original_label}</td>
+                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{normalized_label}</td>
+                <td style='padding: 12px; text-align: center;'>
+                    <span style='color: {status_color}; font-weight: bold;'>{status_text}</span>
+                </td>
+            </tr>
+            """
+            html_parts.append(row)
+
+        html_parts.extend(["""
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        """])
+
+        return ''.join(html_parts)
+
+    def apply_normalization(self) -> str:
+        """应用归一化修改"""
+        try:
+            if not self.normalization_analysis or 'normalized_labels' not in self.normalization_analysis:
+                return "没有可应用的归一化分析结果"
+
+            normalized_labels = self.normalization_analysis['normalized_labels']
+            changes_count = 0
+
+            # 应用归一化结果
+            for img_path in self.images:
+                img_name = os.path.basename(img_path)
+                if img_name in normalized_labels:
+                    new_label = normalized_labels[img_name]
+                    if self.labels[img_path] != new_label:
+                        self.labels[img_path] = new_label
+                        changes_count += 1
+
+                        # 保存到文件
+                        txt_path = os.path.splitext(img_path)[0] + '.txt'
+                        with open(txt_path, 'w', encoding='utf-8') as f:
+                            f.write(new_label)
+
+                        log_info(f"归一化修改: {img_name}")
+
+            # 清除分析结果
+            self.normalization_analysis = None
+
+            return f"✅ 归一化完成！成功修改了 {changes_count} 个标签"
+
+        except Exception as e:
+            error_msg = f"应用归一化失败: {str(e)}"
             log_error(error_msg)
             return error_msg
+
+    def cancel_normalization(self) -> str:
+        """取消归一化修改"""
+        self.normalization_analysis = None
+        return "❌ 已取消归一化操作"
 
     def translate_labels(self, prompt: str, model_type: str, target_lang: str = "英文") -> str:
         """翻译标签"""
@@ -413,7 +551,7 @@ class AILabeler:
                         ]
                     }
                 ],
-                "max_tokens": 500,  # 适当增加
+                "max_tokens": 500,
                 "temperature": 0.3
             }
 
@@ -454,7 +592,7 @@ class TagNormalizer:
 
             prompt += """
 
-请返回JSON格式的归一化建议：
+请返回JSON格式的归一化建议，确保JSON完整且格式正确：
 {
     "suggestions": [
         {"原始": "xxx", "建议": "yyy", "原因": "zzz"}
@@ -462,7 +600,9 @@ class TagNormalizer:
     "normalized_labels": {
         "图片名": "归一化后的标签"
     }
-}"""
+}
+
+重要：请确保返回完整的JSON，不要包含其他说明文字。"""
 
             # 调用AI
             if model_type == "本地LLM Studio":
@@ -470,22 +610,100 @@ class TagNormalizer:
             else:
                 result = self._call_gpt_text(prompt)
 
-            # 解析结果
-            try:
-                # 提取JSON部分
-                json_start = result.find('{')
-                json_end = result.rfind('}') + 1
-                if json_start != -1 and json_end > json_start:
-                    json_str = result[json_start:json_end]
-                    return json.loads(json_str)
-            except:
-                log_error("解析归一化结果失败")
+            log_info(f"AI返回的原始结果前500字符: {result[:500]}...")
 
-            return {"error": "解析失败"}
+            # 改进的JSON解析逻辑
+            parsed_result = self._parse_json_response(result)
+
+            if parsed_result is None:
+                log_error("无法解析AI返回的JSON结果")
+                return {"error": "JSON解析失败", "raw_response": result[:200]}
+
+            return parsed_result
 
         except Exception as e:
             log_error(f"归一化分析失败: {e}")
             return {"error": str(e)}
+
+    def _parse_json_response(self, response: str) -> dict:
+        """改进的JSON解析方法"""
+        try:
+            # 方法1: 寻找完整的JSON块
+            json_start = response.find('{')
+            if json_start == -1:
+                log_error("未找到JSON开始标记")
+                return None
+
+            # 寻找匹配的结束括号
+            brace_count = 0
+            json_end = -1
+
+            for i in range(json_start, len(response)):
+                if response[i] == '{':
+                    brace_count += 1
+                elif response[i] == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+
+            if json_end == -1:
+                log_error("未找到JSON结束标记，可能被截断")
+                return None
+
+            json_str = response[json_start:json_end]
+            log_info(f"提取的JSON字符串前200字符: {json_str[:200]}...")
+
+            # 尝试解析JSON
+            parsed = json.loads(json_str)
+
+            # 验证必要字段
+            if "suggestions" not in parsed and "normalized_labels" not in parsed:
+                log_error("JSON缺少必要字段")
+                return None
+
+            return parsed
+
+        except json.JSONDecodeError as e:
+            log_error(f"JSON解析错误: {e}")
+            return self._try_fix_json(response)
+        except Exception as e:
+            log_error(f"JSON提取错误: {e}")
+            return None
+
+    def _try_fix_json(self, response: str) -> dict:
+        """尝试修复常见的JSON问题"""
+        try:
+            json_start = response.find('{')
+            if json_start == -1:
+                return None
+
+            json_end = response.rfind('}')
+            if json_end == -1:
+                return None
+
+            json_str = response[json_start:json_end + 1]
+
+            # 尝试一些常见的修复
+            fixes = [
+                lambda s: s.replace('",}', '"}'),
+                lambda s: re.sub(r',(\s*[}\]])', r'\1', s),
+                lambda s: s.replace('\\"', '"'),
+            ]
+
+            for fix in fixes:
+                try:
+                    fixed_json = fix(json_str)
+                    parsed = json.loads(fixed_json)
+                    log_info("JSON修复成功")
+                    return parsed
+                except:
+                    continue
+
+            return None
+
+        except Exception:
+            return None
 
     def _call_local_llm_text(self, prompt: str) -> str:
         """调用本地LLM（纯文本）"""
@@ -502,16 +720,25 @@ class TagNormalizer:
             response = requests.post(
                 "http://localhost:1234/v1/chat/completions",
                 json=payload,
-                timeout=60
+                timeout=120
             )
 
             if response.status_code == 200:
                 result = response.json()
-                return result['choices'][0]['message']['content']
+                content = result['choices'][0]['message']['content']
+
+                # 检查是否被截断
+                finish_reason = result['choices'][0].get('finish_reason', '')
+                if finish_reason == 'length':
+                    log_error("LLM响应被截断，请增加max_tokens")
+
+                return content
             else:
+                log_error(f"LLM调用失败: {response.status_code}")
                 return "调用失败"
 
         except Exception as e:
+            log_error(f"LLM调用异常: {e}")
             return f"错误: {str(e)}"
 
     def _call_gpt_text(self, prompt: str) -> str:
@@ -522,13 +749,14 @@ class TagNormalizer:
             response = openapi_client.chat.completions.create(
                 model="Design-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=1000,
+                max_tokens=2000,
                 temperature=0.1
             )
 
             return response.choices[0].message.content
 
         except Exception as e:
+            log_error(f"GPT调用异常: {e}")
             return f"错误: {str(e)}"
 
 
@@ -663,25 +891,104 @@ def create_gradio_interface():
             )
 
         with gr.Tab("🔄 标签归一化"):
-            gr.Markdown("### 分析并归一化标签")
+            gr.Markdown("### 步骤1: 分析归一化规则")
 
-            normalize_model = gr.Radio(
-                choices=["本地LLM Studio", "GPT"],
-                label="选择模型",
-                value="GPT"
+            with gr.Row():
+                normalize_model = gr.Radio(
+                    choices=["本地LLM Studio", "GPT"],
+                    label="选择模型",
+                    value="GPT"
+                )
+                analyze_btn = gr.Button("分析归一化规则", variant="primary")
+
+            # 显示归一化规则
+            rules_display = gr.HTML(label="归一化规则", visible=False)
+
+            gr.Markdown("### 步骤2: 预览修改对比")
+            # 显示修改前后对比
+            comparison_display = gr.HTML(label="标签修改对比", visible=False)
+
+            gr.Markdown("### 步骤3: 确认并应用修改")
+            with gr.Row():
+                apply_btn = gr.Button("✅ 确认并应用修改", variant="primary", visible=False)
+                cancel_btn = gr.Button("❌ 取消修改", variant="secondary", visible=False)
+
+            normalization_status = gr.Textbox(label="操作状态", lines=3)
+
+            def analyze_normalization_rules(model):
+                system.config['model_type'] = model
+                rules_html, comparison_html = system.analyze_normalization(model)
+
+                # 判断是否有有效的分析结果
+                has_results = bool(
+                    system.normalization_analysis and 'normalized_labels' in system.normalization_analysis)
+
+                return (
+                    rules_html,
+                    comparison_html,
+                    gr.update(visible=has_results),  # rules_display
+                    gr.update(visible=has_results),  # comparison_display
+                    gr.update(visible=has_results),  # apply_btn
+                    gr.update(visible=has_results),  # cancel_btn
+                    "✅ 分析完成，请查看规则和对比结果" if has_results else "❌ 分析失败或没有需要归一化的内容"
+                )
+
+            def apply_normalization_changes():
+                result = system.apply_normalization()
+                return (
+                    result,
+                    gr.update(visible=False),  # rules_display
+                    gr.update(visible=False),  # comparison_display
+                    gr.update(visible=False),  # apply_btn
+                    gr.update(visible=False),  # cancel_btn
+                    system.create_image_gallery_html()  # 更新图片显示
+                )
+
+            def cancel_normalization_changes():
+                result = system.cancel_normalization()
+                return (
+                    result,
+                    gr.update(visible=False),  # rules_display
+                    gr.update(visible=False),  # comparison_display
+                    gr.update(visible=False),  # apply_btn
+                    gr.update(visible=False),  # cancel_btn
+                )
+
+            analyze_btn.click(
+                fn=analyze_normalization_rules,
+                inputs=[normalize_model],
+                outputs=[
+                    rules_display,
+                    comparison_display,
+                    rules_display,
+                    comparison_display,
+                    apply_btn,
+                    cancel_btn,
+                    normalization_status
+                ]
             )
 
-            normalize_btn = gr.Button("执行归一化分析", variant="primary")
-            normalization_status = gr.Textbox(label="归一化状态", lines=5)
+            apply_btn.click(
+                fn=apply_normalization_changes,
+                outputs=[
+                    normalization_status,
+                    rules_display,
+                    comparison_display,
+                    apply_btn,
+                    cancel_btn,
+                    gallery_display  # 更新主页面的图片显示
+                ]
+            )
 
-            def run_normalization(model):
-                system.config['model_type'] = model
-                return system.normalize_tags()
-
-            normalize_btn.click(
-                fn=run_normalization,
-                inputs=[normalize_model],
-                outputs=[normalization_status]
+            cancel_btn.click(
+                fn=cancel_normalization_changes,
+                outputs=[
+                    normalization_status,
+                    rules_display,
+                    comparison_display,
+                    apply_btn,
+                    cancel_btn
+                ]
             )
 
         with gr.Tab("🌐 标签翻译"):
