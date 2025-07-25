@@ -52,19 +52,12 @@ class SimpleImageLabelingSystem:
 
     def _default_labeling_prompt(self) -> str:
         """默认的打标提示词"""
-        return """你是一名图像理解专家，请根据以下图片内容，生成自然流畅、具体清晰的图像描述。要求如下：
+        return """你是一名图像理解专家，请根据以下图片内容，生成一句自然流畅、具体清晰的图像描述。要求如下：
 1. 使用简洁准确的中文句子；
 2. 描述应包括图像中的主体、动作、位置或背景环境；
 3. 避免使用"图中"、"这是一张图片"等冗余措辞；
 4. 语言风格自然、具象，不使用抽象形容词或主观感受；
 5. 描述的结构为[主体] + [外观/服装] + [动作/姿势] + [背景/环境] + [氛围/灯光（可选）]
-示例：
-主体：xxx
-外观/服装：xxx
-动作/姿势：xxx
-背景/环境：xxx
-氛围/灯光：xxx
-
 
 现在请描述这张图片的内容："""
 
@@ -608,7 +601,7 @@ def create_gradio_interface():
     """创建Gradio界面"""
     system = SimpleImageLabelingSystem()
 
-    with gr.Blocks(title="简化版图像打标系统", theme=gr.themes.Soft(),fill_width=True) as interface:
+    with gr.Blocks(title="简化版图像打标系统", theme=gr.themes.Soft()) as interface:
         gr.Markdown("# 🏷️ 简化版图像打标系统")
 
         with gr.Tab("📁 数据加载"):
