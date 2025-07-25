@@ -7,6 +7,7 @@ import gradio as gr
 import os
 import json
 import time
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 import pandas as pd
@@ -43,7 +44,6 @@ class SimpleImageLabelingSystem:
             'labeling_prompt': self._default_labeling_prompt(),
             'translation_prompt': self._default_translation_prompt(),
             'model_type': 'GPT',
-            'batch_size': 1,
             'delay_between_calls': 2.0
         }
 
@@ -413,7 +413,7 @@ class AILabeler:
                         ]
                     }
                 ],
-                "max_tokens": 300,
+                "max_tokens": 500,  # 适当增加
                 "temperature": 0.3
             }
 
@@ -495,7 +495,7 @@ class TagNormalizer:
             payload = {
                 "model": "gpt-3.5-turbo",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 1000,
+                "max_tokens": 2500,
                 "temperature": 0.1
             }
 
