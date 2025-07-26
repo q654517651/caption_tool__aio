@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-"""
-精简版图像打标系统 - 改进的归一化功能
-"""
 
 import gradio as gr
 import os
 import json
 import time
-import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 import pandas as pd
@@ -15,7 +11,7 @@ from datetime import datetime
 import base64
 from PIL import Image
 import io
-from chat_tool import AIChatTool, ModelType
+from chat_tool import AIChatTool
 
 
 # 简单的日志记录
@@ -59,16 +55,16 @@ class SimpleImageLabelingSystem:
 
     def _default_labeling_prompt(self) -> str:
         """默认的打标提示词"""
-        return """你是一名图像理解专家，请根据以下图片内容，生成一句自然流畅、具体清晰的图像描述。要求如下：
+        return """你是一名图像理解专家，请根据以下图片内容，生成自然流畅、具体清晰的图像描述。要求如下：
                 1. 使用简洁准确的中文句子；
-                2. 描述应包括图像中的主体、动作、位置或背景环境；
-                3. 避免使用"图中"、"这是一张图片"等冗余措辞；
-                4. 语言风格自然、具象，不使用抽象形容词或主观感受；
-                5. 描述的结构为[主体] + [外观/服装] + [动作/姿势] + [背景/环境] + [氛围/灯光（可选）]
-                
+                2. 避免使用"图中"、"这是一张图片"等冗余措辞；
+                3. 语言风格自然、具象，不使用抽象形容词或主观感受；
+                4. 不要描述画面中的风格；
+                5. 描述的结构为[主体] + [外观/服装] + [动作/姿势] + [背景/环境] + [氛围/灯光（可选）]；
                 现在请描述这张图片的内容："""
 
-    def _default_translation_prompt(self) -> str:
+    @staticmethod
+    def _default_translation_prompt() -> str:
         """默认的翻译提示词"""
         return """请将以下中文描述翻译成英文，保持原意不变，要求：
                 1. 翻译要准确、自然、流畅
@@ -122,16 +118,95 @@ class SimpleImageLabelingSystem:
 
             self.labels[img_path] = label_text
 
+
+    # def create_image_gallery_html(self) -> str:
+    #     """创建图片展示HTML"""
+    #     if not self.images:
+    #         return "<p>没有找到图片</p>"
+    #
+    #     html_parts = ["<div style='display: flex; flex-wrap: wrap; gap: 10px; padding: 10px;'>"]
+    #
+    #     for i, img_path in enumerate(self.images):
+    #         img_name = os.path.basename(img_path)
+    #         current_label = self.labels.get(img_path, "")
+    #
+    #         # 读取图片并转换为base64
+    #         try:
+    #             with Image.open(img_path) as img:
+    #                 # 创建缩略图
+    #                 img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    #                 buffer = io.BytesIO()
+    #                 img.save(buffer, format='JPEG', quality=85)
+    #                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+    #                 img_src = f"data:image/jpeg;base64,{img_base64}"
+    #         except:
+    #             img_src = ""
+    #
+    #         # 创建图片卡片
+    #         img_container = f"""
+    #         <div style='
+    #             width: 300px;
+    #             border: 1px solid #ddd;
+    #             padding: 10px;
+    #             border-radius: 5px;
+    #             background: white;
+    #         '>
+    #             <div style='text-align: center; margin-bottom: 10px;'>
+    #                 <img src='{img_src}' style='max-width: 100%; max-height: 200px;' alt='{img_name}'/>
+    #             </div>
+    #             <div style='font-weight: bold; margin-bottom: 5px; word-break: break-all;'>
+    #                 {img_name}
+    #             </div>
+    #             <div>
+    #                 <textarea id='label_{i}'
+    #                           style='width: 100%; height: 80px; resize: vertical;'
+    #                           placeholder='标签内容...'
+    #                           readonly>{current_label}</textarea>
+    #             </div>
+    #             <div style='text-align: right; margin-top: 5px; color: {"green" if current_label else "orange"}'>
+    #                 {'✓ 已标注' if current_label else '○ 未标注'}
+    #             </div>
+    #         </div>
+    #         """
+    #         html_parts.append(img_container)
+    #
+    #     html_parts.append("</div>")
+    #
+    #     # 统计信息
+    #     labeled_count = len([l for l in self.labels.values() if l.strip()])
+    #     stats_html = f"""
+    #     <div style='background: #f0f0f0; padding: 10px; margin-bottom: 10px; border-radius: 5px;'>
+    #         <h3>数据集统计</h3>
+    #         <p>总数: {len(self.images)} | 已标注: {labeled_count} | 未标注: {len(self.images) - labeled_count}</p>
+    #     </div>
+    #     """
+    #
+    #     return stats_html + ''.join(html_parts)
+
+
     def create_image_gallery_html(self) -> str:
         """创建图片展示HTML"""
         if not self.images:
             return "<p>没有找到图片</p>"
 
-        html_parts = ["<div style='display: flex; flex-wrap: wrap; gap: 10px; padding: 10px;'>"]
+        # 响应式网格布局容器
+        html_parts = ["""
+        <div style='
+            width: 100%;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 15px;
+            padding: 15px;
+            box-sizing: border-box;
+        '>
+        """]
 
         for i, img_path in enumerate(self.images):
             img_name = os.path.basename(img_path)
             current_label = self.labels.get(img_path, "")
+
+            # 初始化默认值
+            img_src = ""
 
             # 读取图片并转换为base64
             try:
@@ -142,31 +217,64 @@ class SimpleImageLabelingSystem:
                     img.save(buffer, format='JPEG', quality=85)
                     img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
                     img_src = f"data:image/jpeg;base64,{img_base64}"
-            except:
+            except (OSError, IOError, ValueError) as e:
+                log_error(f"读取图片失败 {img_path}: {e}")
                 img_src = ""
 
-            # 创建图片卡片
+            # 创建响应式图片卡片
             img_container = f"""
             <div style='
-                width: 300px;
                 border: 1px solid #ddd;
-                padding: 10px;
-                border-radius: 5px;
+                padding: 15px;
+                border-radius: 8px;
                 background: white;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                display: flex;
+                flex-direction: column;
+                min-height: 400px;
             '>
-                <div style='text-align: center; margin-bottom: 10px;'>
-                    <img src='{img_src}' style='max-width: 100%; max-height: 200px;' alt='{img_name}'/>
+                <div style='
+                    text-align: center; 
+                    margin-bottom: 15px;
+                    flex: 0 0 auto;
+                '>
+                    {f"<img src='{img_src}' style='width: 100%; max-height: 250px; object-fit: contain; border-radius: 4px;' alt='{img_name}'/>" if img_src else f"<div style='height: 250px; display: flex; align-items: center; justify-content: center; background: #f5f5f5; color: #999; border-radius: 4px; flex-direction: column;'><div>图片加载失败</div><div style='font-size: 12px; margin-top: 5px;'>{img_name}</div></div>"}
                 </div>
-                <div style='font-weight: bold; margin-bottom: 5px; word-break: break-all;'>
+                <div style='
+                    font-weight: bold; 
+                    margin-bottom: 10px; 
+                    word-break: break-all;
+                    font-size: 14px;
+                    color: #333;
+                    flex: 0 0 auto;
+                '>
                     {img_name}
                 </div>
-                <div>
+                <div style='flex: 1 1 auto; display: flex; flex-direction: column;'>
                     <textarea id='label_{i}' 
-                              style='width: 100%; height: 80px; resize: vertical;' 
+                              style='
+                                  width: 100%; 
+                                  height: 100px; 
+                                  resize: vertical; 
+                                  border: 1px solid #ccc;
+                                  border-radius: 4px;
+                                  padding: 8px;
+                                  font-family: inherit;
+                                  font-size: 13px;
+                                  box-sizing: border-box;
+                                  flex: 1;
+                              ' 
                               placeholder='标签内容...'
                               readonly>{current_label}</textarea>
                 </div>
-                <div style='text-align: right; margin-top: 5px; color: {"green" if current_label else "orange"}'>
+                <div style='
+                    text-align: right; 
+                    margin-top: 10px; 
+                    color: {"green" if current_label else "orange"};
+                    font-size: 12px;
+                    font-weight: bold;
+                    flex: 0 0 auto;
+                '>
                     {'✓ 已标注' if current_label else '○ 未标注'}
                 </div>
             </div>
@@ -178,13 +286,45 @@ class SimpleImageLabelingSystem:
         # 统计信息
         labeled_count = len([l for l in self.labels.values() if l.strip()])
         stats_html = f"""
-        <div style='background: #f0f0f0; padding: 10px; margin-bottom: 10px; border-radius: 5px;'>
-            <h3>数据集统计</h3>
-            <p>总数: {len(self.images)} | 已标注: {labeled_count} | 未标注: {len(self.images) - labeled_count}</p>
+        <div style='
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 100%;
+            box-sizing: border-box;
+        '>
+            <h3 style='margin: 0 0 15px 0; font-size: 24px; font-weight: 600;'>📊 数据集统计</h3>
+            <div style='
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); 
+                gap: 15px;
+                text-align: center;
+            '>
+                <div style='background: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px;'>
+                    <div style='font-size: 28px; font-weight: bold; margin-bottom: 5px;'>{len(self.images)}</div>
+                    <div style='font-size: 14px; opacity: 0.9;'>总图片数</div>
+                </div>
+                <div style='background: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px;'>
+                    <div style='font-size: 28px; font-weight: bold; margin-bottom: 5px; color: #4ade80;'>{labeled_count}</div>
+                    <div style='font-size: 14px; opacity: 0.9;'>已标注</div>
+                </div>
+                <div style='background: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px;'>
+                    <div style='font-size: 28px; font-weight: bold; margin-bottom: 5px; color: #f97316;'>{len(self.images) - labeled_count}</div>
+                    <div style='font-size: 14px; opacity: 0.9;'>未标注</div>
+                </div>
+                <div style='background: rgba(255,255,255,0.2); padding: 15px; border-radius: 8px;'>
+                    <div style='font-size: 28px; font-weight: bold; margin-bottom: 5px; color: #06b6d4;'>{round(labeled_count / len(self.images) * 100) if self.images else 0}%</div>
+                    <div style='font-size: 14px; opacity: 0.9;'>完成度</div>
+                </div>
+            </div>
         </div>
         """
 
         return stats_html + ''.join(html_parts)
+
 
     def start_ai_labeling(self, prompt: str, model_type: str, delay: float) -> str:
         """开始AI打标"""
@@ -235,6 +375,7 @@ class SimpleImageLabelingSystem:
             log_error(error_msg)
             return error_msg
 
+
     def analyze_normalization(self, model_type: str) -> Tuple[str, str]:
         """分析归一化规则，返回规则描述和对比表格"""
         try:
@@ -247,18 +388,17 @@ class SimpleImageLabelingSystem:
             if not all_labels:
                 return "没有标签需要归一化", ""
 
-            # 调用AI分析需要归一化的标签
-            self.normalization_analysis = self.tag_normalizer.analyze_normalization(all_labels, model_type)
+            # 调用TagNormalizer进行分析
+            analysis_result = self.tag_normalizer.analyze_normalization(all_labels, model_type)
 
-            if isinstance(self.normalization_analysis, dict) and 'normalized_labels' in self.normalization_analysis:
-                # 生成规则描述
-                rules_html = self._generate_rules_display()
-                # 生成对比表格
-                comparison_html = self._generate_comparison_table()
 
+            if isinstance(analysis_result, dict) and 'normalized_labels' in analysis_result:
+                # 生成规则描述和对比表格
+                rules_html = self.tag_normalizer.generate_rules_display()
+                comparison_html = self.tag_normalizer.generate_comparison_table(self.labels)
                 return rules_html, comparison_html
             else:
-                error_msg = f"分析失败: {self.normalization_analysis.get('error', '未知错误')}"
+                error_msg = f"分析失败: {analysis_result.get('error', '未知错误')}"
                 return error_msg, ""
 
         except Exception as e:
@@ -266,136 +406,31 @@ class SimpleImageLabelingSystem:
             log_error(error_msg)
             return error_msg, ""
 
-    def _generate_rules_display(self) -> str:
-        """生成归一化规则的HTML显示"""
-        if not self.normalization_analysis or 'suggestions' not in self.normalization_analysis:
-            return "<p>没有找到归一化建议</p>"
-
-        html_parts = ["""
-        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
-            <h3 style='color: #2c3e50; margin-bottom: 15px;'>🔍 归一化规则分析</h3>
-        """]
-
-        suggestions = self.normalization_analysis.get('suggestions', [])
-
-        if suggestions:
-            html_parts.append("<div style='margin-bottom: 20px;'>")
-            for i, suggestion in enumerate(suggestions, 1):
-                rule_item = f"""
-                <div style='background: white; padding: 12px; margin: 8px 0; border-left: 4px solid #3498db; border-radius: 4px;'>
-                    <h4 style='color: #2980b9; margin: 0 0 8px 0;'>规则 {i}</h4>
-                    <p style='margin: 5px 0;'><strong>原始表达:</strong> {suggestion.get('原始', 'N/A')}</p>
-                    <p style='margin: 5px 0;'><strong>建议修改:</strong> {suggestion.get('建议', 'N/A')}</p>
-                    <p style='margin: 5px 0; color: #7f8c8d;'><strong>修改原因:</strong> {suggestion.get('原因', 'N/A')}</p>
-                </div>
-                """
-                html_parts.append(rule_item)
-            html_parts.append("</div>")
-        else:
-            html_parts.append("<p>没有找到需要归一化的规则</p>")
-
-        # 统计信息
-        total_labels = len([l for l in self.labels.values() if l.strip()])
-        normalized_count = len(self.normalization_analysis.get('normalized_labels', {}))
-
-        stats = f"""
-        <div style='background: #e8f5e8; padding: 10px; border-radius: 5px; margin-top: 15px;'>
-            <h4 style='margin: 0 0 10px 0; color: #27ae60;'>📊 统计信息</h4>
-            <p style='margin: 5px 0;'>总标签数: {total_labels}</p>
-            <p style='margin: 5px 0;'>需要修改的标签: {normalized_count}</p>
-            <p style='margin: 5px 0;'>归一化规则数: {len(suggestions)}</p>
-        </div>
-        """
-        html_parts.append(stats)
-        html_parts.append("</div>")
-
-        return ''.join(html_parts)
-
-    def _generate_comparison_table(self) -> str:
-        """生成修改前后对比表格"""
-        if not self.normalization_analysis or 'normalized_labels' not in self.normalization_analysis:
-            return "<p>没有对比数据</p>"
-
-        normalized_labels = self.normalization_analysis['normalized_labels']
-
-        html_parts = ["""
-        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
-            <h3 style='color: #2c3e50; margin-bottom: 15px;'>📋 标签修改对比</h3>
-            <div style='overflow-x: auto;'>
-                <table style='width: 100%; border-collapse: collapse; background: white; border-radius: 5px; overflow: hidden;'>
-                    <thead>
-                        <tr style='background: #34495e; color: white;'>
-                            <th style='padding: 12px; text-align: left; width: 200px;'>图片名称</th>
-                            <th style='padding: 12px; text-align: left;'>修改前</th>
-                            <th style='padding: 12px; text-align: left;'>修改后</th>
-                            <th style='padding: 12px; text-align: center; width: 100px;'>状态</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        """]
-
-        # 生成对比行
-        for img_path, original_label in self.labels.items():
-            if not original_label or not original_label.strip():
-                continue
-
-            img_name = os.path.basename(img_path)
-            normalized_label = normalized_labels.get(img_name, original_label)
-
-            # 判断是否有变化
-            has_changes = original_label != normalized_label
-            status_color = "#e74c3c" if has_changes else "#27ae60"
-            status_text = "需修改" if has_changes else "无变化"
-            row_bg = "#fff5f5" if has_changes else "#f0fff0"
-
-            row = f"""
-            <tr style='background: {row_bg}; border-bottom: 1px solid #ecf0f1;'>
-                <td style='padding: 12px; font-weight: bold; word-break: break-word;'>{img_name}</td>
-                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{original_label}</td>
-                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{normalized_label}</td>
-                <td style='padding: 12px; text-align: center;'>
-                    <span style='color: {status_color}; font-weight: bold;'>{status_text}</span>
-                </td>
-            </tr>
-            """
-            html_parts.append(row)
-
-        html_parts.extend(["""
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        """])
-
-        return ''.join(html_parts)
 
     def apply_normalization(self) -> str:
         """应用归一化修改"""
         try:
-            if not self.normalization_analysis or 'normalized_labels' not in self.normalization_analysis:
-                return "没有可应用的归一化分析结果"
+            # 调用TagNormalizer应用归一化
+            new_labels, changes_count = self.tag_normalizer.apply_normalization(self.labels, self.images)
 
-            normalized_labels = self.normalization_analysis['normalized_labels']
-            changes_count = 0
+            if changes_count == 0:
+                return "没有需要修改的标签"
 
-            # 应用归一化结果
+            # 更新标签并保存到文件
             for img_path in self.images:
                 img_name = os.path.basename(img_path)
-                if img_name in normalized_labels:
-                    new_label = normalized_labels[img_name]
-                    if self.labels[img_path] != new_label:
-                        self.labels[img_path] = new_label
-                        changes_count += 1
+                if img_name in new_labels and self.labels[img_path] != new_labels[img_path]:
+                    self.labels[img_path] = new_labels[img_path]
 
-                        # 保存到文件
-                        txt_path = os.path.splitext(img_path)[0] + '.txt'
-                        with open(txt_path, 'w', encoding='utf-8') as f:
-                            f.write(new_label)
+                    # 保存到文件
+                    txt_path = os.path.splitext(img_path)[0] + '.txt'
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(new_labels[img_path])
 
-                        log_info(f"归一化修改: {img_name}")
+                    log_info(f"归一化修改: {img_name}")
 
-            # 清除分析结果
-            self.normalization_analysis = None
+                # 清除分析结果
+                self.tag_normalizer.clear_analysis()
 
             return f"✅ 归一化完成！成功修改了 {changes_count} 个标签"
 
@@ -409,7 +444,7 @@ class SimpleImageLabelingSystem:
         self.normalization_analysis = None
         return "❌ 已取消归一化操作"
 
-    def translate_labels(self, prompt: str, model_type: str, target_lang: str = "英文") -> str:
+    def translate_labels(self, prompt: str, model_type: str) -> str:
         """翻译标签"""
         try:
             # 收集需要翻译的标签
@@ -427,7 +462,8 @@ class SimpleImageLabelingSystem:
             for img_path, original_label in labels_to_translate.items():
                 try:
                     # 调用翻译
-                    translated = self.ai_chat_tool.call_chatai(model_type=model_type,prompt=prompt,content=original_label)
+                    translated = self.ai_chat_tool.call_chatai(model_type=model_type, prompt=prompt,
+                                                               content=original_label)
 
                     if translated and not translated.startswith("错误"):
                         # 保存翻译结果到新文件
@@ -496,337 +532,214 @@ class SimpleImageLabelingSystem:
             return f"保存失败: {str(e)}"
 
 
-# AI标注模块
-# class AILabeler:
-#     def __init__(self):
-#         self.llm_studio_url = "http://localhost:1234/v1"
-#
-#     def encode_image_to_base64(self, image_path: str) -> str:
-#         """将图片编码为base64"""
-#         try:
-#             with Image.open(image_path) as img:
-#                 # 调整大小
-#                 max_size = (1024, 1024)
-#                 img.thumbnail(max_size, Image.Resampling.LANCZOS)
-#
-#                 buffer = io.BytesIO()
-#                 img.save(buffer, format='JPEG', quality=85)
-#                 img_str = base64.b64encode(buffer.getvalue()).decode()
-#                 return img_str
-#         except Exception as e:
-#             log_error(f"图片编码失败 {image_path}: {e}")
-#             return ""
-#
-#     def call_gpt(self, image_path: str, prompt: str) -> str:
-#         """调用GPT（需要根据实际情况修改）"""
-#         try:
-#             # 导入GPT调用模块
-#             from chat_tool import get_completion, encode_image_to_base64
-#
-#             img_base64 = encode_image_to_base64(image_path)
-#             result = get_completion(control="customize", prompt=prompt, content=img_base64)
-#
-#             return result if result else "GPT调用失败"
-#
-#         except Exception as e:
-#             log_error(f"GPT调用错误: {e}")
-#             return f"错误: {str(e)}"
-#
-#     def call_local_llm(self, image_path: str, prompt: str) -> str:
-#         """调用本地LLM Studio"""
-#         try:
-#             import requests
-#
-#             base64_image = self.encode_image_to_base64(image_path)
-#             if not base64_image:
-#                 return "图片编码失败"
-#
-#             payload = {
-#                 "model": "gpt-4-vision-preview",
-#                 "messages": [
-#                     {
-#                         "role": "user",
-#                         "content": [
-#                             {"type": "text", "text": prompt},
-#                             {
-#                                 "type": "image_url",
-#                                 "image_url": {
-#                                     "url": f"data:image/jpeg;base64,{base64_image}"
-#                                 }
-#                             }
-#                         ]
-#                     }
-#                 ],
-#                 "max_tokens": 500,
-#                 "temperature": 0.3
-#             }
-#
-#             response = requests.post(
-#                 f"{self.llm_studio_url}/chat/completions",
-#                 json=payload,
-#                 timeout=60
-#             )
-#
-#             if response.status_code == 200:
-#                 result = response.json()
-#                 return result['choices'][0]['message']['content'].strip()
-#             else:
-#                 return f"本地LLM调用失败: {response.status_code}"
-#
-#         except Exception as e:
-#             log_error(f"本地LLM调用失败: {e}")
-#             return f"错误: {str(e)}"
-
-
 # 标签归一化模块
 class TagNormalizer:
     def __init__(self, ai_chat_tool):
         self.ai_chat_tool = ai_chat_tool
+        self.analysis_result = None
+        self.batch_size = 25  # 每批处理的标签数量
 
     def analyze_normalization(self, labels_dict: Dict[str, str], model_type: str) -> dict:
-        """分析需要归一化的标签"""
+        """分批分析需要归一化的标签"""
         try:
-            # 构建发送给AI的内容
-            prompt = """请分析以下图像标签，找出需要归一化的内容。
-                        请识别：
-                        1. 相似或重复的描述
-                        2. 可以统一的表达方式
-                        3. 需要修正的格式问题
-                        
-                        标签列表：
-                        """
+            if not labels_dict:
+                return {"error": "没有标签需要归一化"}
 
-            for img_name, label in labels_dict.items():
-                prompt += f"\n{img_name}: {label}"
+            # 分批处理
+            label_items = list(labels_dict.items())
+            batches = [label_items[i:i + self.batch_size]
+                       for i in range(0, len(label_items), self.batch_size)]
 
-            prompt += """请返回JSON格式的归一化建议，确保JSON完整且格式正确：
-                    {
-                        "suggestions": [
-                            {"原始": "xxx", "建议": "yyy", "原因": "zzz"}
-                        ],
-                        "normalized_labels": {
-                            "图片名": "归一化后的标签"
-                        }
-                    }
-                    
-                    重要：请确保返回完整的JSON，不要包含其他说明文字。"""
+            log_info(f"将 {len(label_items)} 个标签分成 {len(batches)} 批处理")
 
-            # 调用AI
-            result = self.ai_chat_tool.call_chatai(model_type=model_type,prompt=prompt)
+            all_suggestions = []
+            all_normalized = {}
 
-            # if model_type == "本地LLM Studio":
-            #     result = self._call_local_llm_text(prompt)
-            # else:
-            #     result = self._call_gpt_text(prompt)
+            # 分批分析
+            for batch_idx, batch in enumerate(batches, 1):
+                log_info(f"处理第 {batch_idx}/{len(batches)} 批")
 
-            log_info(f"AI返回的原始结果前500字符: {result[:500]}...")
+                batch_result = self._analyze_batch(dict(batch), model_type)
+                if "error" not in batch_result:
+                    all_suggestions.extend(batch_result.get("suggestions", []))
+                    all_normalized.update(batch_result.get("normalized_labels", {}))
 
-            # 改进的JSON解析逻辑
-            parsed_result = self._parse_json_response(result)
+                # 批次间延迟
+                if batch_idx < len(batches):
+                    time.sleep(1)
 
-            if parsed_result is None:
-                log_error("无法解析AI返回的JSON结果")
-                return {"error": "JSON解析失败", "raw_response": result[:200]}
+            # 合并结果
+            self.analysis_result = {
+                "suggestions": all_suggestions,
+                "normalized_labels": all_normalized
+            }
 
-            return parsed_result
+            return self.analysis_result
 
         except Exception as e:
             log_error(f"归一化分析失败: {e}")
             return {"error": str(e)}
 
-    def _parse_json_response(self, response: str) -> dict:
-        """改进的JSON解析方法"""
+    def _analyze_batch(self, batch_labels: Dict[str, str], model_type: str) -> dict:
+        """分析单批标签"""
+        prompt = f"""请分析以下 {len(batch_labels)} 个图像标签，找出需要归一化的内容。
+                请识别相似表达、格式问题等需要统一的地方。
+                
+                标签列表："""
+
+        for img_name, label in batch_labels.items():
+            prompt += f"\n{img_name}: {label}"
+
+        prompt += """请返回JSON格式：
+                {
+                    "suggestions": [{"原始": "xxx", "建议": "yyy", "原因": "zzz"}],
+                    "normalized_labels": {"图片名": "归一化后的标签"}
+                }
+                只返回JSON，不要其他文字。"""
+
         try:
-            # 方法1: 寻找完整的JSON块
-            json_start = response.find('{')
-            if json_start == -1:
-                log_error("未找到JSON开始标记")
-                return None
-
-            # 寻找匹配的结束括号
-            brace_count = 0
-            json_end = -1
-
-            for i in range(json_start, len(response)):
-                if response[i] == '{':
-                    brace_count += 1
-                elif response[i] == '}':
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_end = i + 1
-                        break
-
-            if json_end == -1:
-                log_error("未找到JSON结束标记，可能被截断")
-                return None
-
-            json_str = response[json_start:json_end]
-            log_info(f"提取的JSON字符串前200字符: {json_str[:200]}...")
-
-            # 尝试解析JSON
-            parsed = json.loads(json_str)
-
-            # 验证必要字段
-            if "suggestions" not in parsed and "normalized_labels" not in parsed:
-                log_error("JSON缺少必要字段")
-                return None
-
-            return parsed
-
-        except json.JSONDecodeError as e:
-            log_error(f"JSON解析错误: {e}")
-            return self._try_fix_json(response)
+            result = self.ai_chat_tool.call_chatai(model_type=model_type, prompt=prompt)
+            return self._parse_json_response(result) or {"suggestions": [], "normalized_labels": {}}
         except Exception as e:
-            log_error(f"JSON提取错误: {e}")
-            return None
+            log_error(f"批次分析失败: {e}")
+            return {"suggestions": [], "normalized_labels": {}}
 
-    def _try_fix_json(self, response: str) -> dict:
-        """尝试修复常见的JSON问题"""
+    def generate_rules_display(self) -> str:
+        """生成归一化规则HTML显示"""
+        if not self.analysis_result or 'suggestions' not in self.analysis_result:
+            return "<p>没有找到归一化建议</p>"
+
+        suggestions = self.analysis_result.get('suggestions', [])
+        normalized_count = len(self.analysis_result.get('normalized_labels', {}))
+
+        html = f"""
+        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
+            <h3 style='color: #2c3e50; margin-bottom: 15px;'>🔍 归一化规则分析</h3>
+        """
+
+        if suggestions:
+            for i, suggestion in enumerate(suggestions[:10], 1):  # 只显示前10条
+                html += f"""
+                <div style='background: white; padding: 12px; margin: 8px 0; border-left: 4px solid #3498db; border-radius: 4px;'>
+                    <h4 style='color: #2980b9; margin: 0 0 8px 0;'>规则 {i}</h4>
+                    <p style='margin: 5px 0;'><strong>原始:</strong> {suggestion.get('原始', 'N/A')}</p>
+                    <p style='margin: 5px 0;'><strong>建议:</strong> {suggestion.get('建议', 'N/A')}</p>
+                    <p style='margin: 5px 0; color: #7f8c8d;'><strong>原因:</strong> {suggestion.get('原因', 'N/A')}</p>
+                </div>
+                """
+
+            if len(suggestions) > 10:
+                html += f"<p style='text-align: center; color: #7f8c8d;'>... 还有 {len(suggestions) - 10} 条规则未显示</p>"
+        else:
+            html += "<p>没有找到需要归一化的规则</p>"
+
+        html += f"""
+        <div style='background: #e8f5e8; padding: 10px; border-radius: 5px; margin-top: 15px;'>
+            <h4 style='margin: 0 0 10px 0; color: #27ae60;'>📊 统计信息</h4>
+            <p style='margin: 5px 0;'>发现规则数: {len(suggestions)}</p>
+            <p style='margin: 5px 0;'>需修改标签: {normalized_count}</p>
+        </div></div>
+        """
+
+        return html
+
+    def generate_comparison_table(self, original_labels: Dict[str, str]) -> str:
+        """生成修改前后对比表格"""
+        if not self.analysis_result or 'normalized_labels' not in self.analysis_result:
+            return "<p>没有对比数据</p>"
+
+        normalized_labels = self.analysis_result['normalized_labels']
+
+        html = """
+        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
+            <h3 style='color: #2c3e50; margin-bottom: 15px;'>📋 标签修改对比</h3>
+            <div style='overflow-x: auto;'>
+                <table style='width: 100%; border-collapse: collapse; background: white; border-radius: 5px; overflow: hidden;'>
+                    <thead>
+                        <tr style='background: #34495e; color: white;'>
+                            <th style='padding: 12px; text-align: left; width: 200px;'>图片名称</th>
+                            <th style='padding: 12px; text-align: left;'>修改前</th>
+                            <th style='padding: 12px; text-align: left;'>修改后</th>
+                            <th style='padding: 12px; text-align: center; width: 100px;'>状态</th>
+                        </tr>
+                    </thead><tbody>
+        """
+
+        for img_path, original_label in original_labels.items():
+            if not original_label or not original_label.strip():
+                continue
+
+            img_name = os.path.basename(img_path)
+            normalized_label = normalized_labels.get(img_name, original_label)
+            has_changes = original_label != normalized_label
+
+            status_color = "#e74c3c" if has_changes else "#27ae60"
+            status_text = "需修改" if has_changes else "无变化"
+            row_bg = "#fff5f5" if has_changes else "#f0fff0"
+
+            html += f"""
+            <tr style='background: {row_bg}; border-bottom: 1px solid #ecf0f1;'>
+                <td style='padding: 12px; font-weight: bold; word-break: break-word;'>{img_name}</td>
+                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{original_label}</td>
+                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{normalized_label}</td>
+                <td style='padding: 12px; text-align: center;'>
+                    <span style='color: {status_color}; font-weight: bold;'>{status_text}</span>
+                </td>
+            </tr>
+            """
+
+        html += "</tbody></table></div></div>"
+        return html
+
+    def apply_normalization(self, labels_dict: Dict[str, str], images: List[str]) -> Tuple[Dict[str, str], int]:
+        """应用归一化，返回新标签字典和修改数量"""
+        if not self.analysis_result or 'normalized_labels' not in self.analysis_result:
+            return labels_dict, 0
+
+        normalized_labels = self.analysis_result['normalized_labels']
+        new_labels = labels_dict.copy()
+        changes_count = 0
+
+        for img_path in images:
+            img_name = os.path.basename(img_path)
+            if img_name in normalized_labels:
+                new_label = normalized_labels[img_name]
+                if new_labels[img_path] != new_label:
+                    new_labels[img_path] = new_label
+                    changes_count += 1
+
+        return new_labels, changes_count
+
+    def clear_analysis(self):
+        """清除分析结果"""
+        self.analysis_result = None
+
+    @staticmethod
+    def _parse_json_response(response: str) -> dict:
+        """精简的JSON解析方法"""
         try:
-            json_start = response.find('{')
-            if json_start == -1:
-                return None
+            # 直接尝试解析整个响应
+            return json.loads(response)
+        except json.JSONDecodeError:
+            try:
+                # 如果失败，尝试提取JSON部分
+                json_start = response.find('{')
+                json_end = response.rfind('}')
 
-            json_end = response.rfind('}')
-            if json_end == -1:
-                return None
+                if json_start != -1 and json_end != -1 and json_end > json_start:
+                    json_str = response[json_start:json_end + 1]
+                    parsed = json.loads(json_str)
 
-            json_str = response[json_start:json_end + 1]
+                    # 简单验证必要字段
+                    if "suggestions" in parsed or "normalized_labels" in parsed:
+                        return parsed
 
-            # 尝试一些常见的修复
-            fixes = [
-                lambda s: s.replace('",}', '"}'),
-                lambda s: re.sub(r',(\s*[}\]])', r'\1', s),
-                lambda s: s.replace('\\"', '"'),
-            ]
+            except json.JSONDecodeError:
+                pass
 
-            for fix in fixes:
-                try:
-                    fixed_json = fix(json_str)
-                    parsed = json.loads(fixed_json)
-                    log_info("JSON修复成功")
-                    return parsed
-                except:
-                    continue
-
-            return None
-
-        except Exception:
-            return None
-
-    # def _call_local_llm_text(self, prompt: str) -> str:
-    #     """调用本地LLM（纯文本）"""
-    #     try:
-    #         import requests
-    #
-    #         payload = {
-    #             "model": "gpt-3.5-turbo",
-    #             "messages": [{"role": "user", "content": prompt}],
-    #             "max_tokens": 2500,
-    #             "temperature": 0.1
-    #         }
-    #
-    #         response = requests.post(
-    #             "http://localhost:1234/v1/chat/completions",
-    #             json=payload,
-    #             timeout=120
-    #         )
-    #
-    #         if response.status_code == 200:
-    #             result = response.json()
-    #             content = result['choices'][0]['message']['content']
-    #
-    #             # 检查是否被截断
-    #             finish_reason = result['choices'][0].get('finish_reason', '')
-    #             if finish_reason == 'length':
-    #                 log_error("LLM响应被截断，请增加max_tokens")
-    #
-    #             return content
-    #         else:
-    #             log_error(f"LLM调用失败: {response.status_code}")
-    #             return "调用失败"
-    #
-    #     except Exception as e:
-    #         log_error(f"LLM调用异常: {e}")
-    #         return f"错误: {str(e)}"
-    #
-    # def _call_gpt_text(self, prompt: str) -> str:
-    #     """调用GPT（纯文本）"""
-    #     try:
-    #         from chat_tool import openapi_client
-    #
-    #         response = openapi_client.chat.completions.create(
-    #             model="Design-4o-mini",
-    #             messages=[{"role": "user", "content": prompt}],
-    #             max_tokens=2000,
-    #             temperature=0.1
-    #         )
-    #
-    #         return response.choices[0].message.content
-    #
-    #     except Exception as e:
-    #         log_error(f"GPT调用异常: {e}")
-    #         return f"错误: {str(e)}"
-
-
-# 翻译模块
-# class Translator:
-#     def translate(self, text: str, prompt: str, model_type: str, target_lang: str) -> str:
-#         """翻译文本"""
-#         try:
-#             full_prompt = f"{prompt}\n\n{text}"
-#
-#             if model_type == "本地LLM Studio":
-#                 return self._call_local_llm(full_prompt)
-#             else:
-#                 return self._call_gpt(full_prompt)
-#
-#         except Exception as e:
-#             return f"错误: {str(e)}"
-#
-#     def _call_local_llm(self, prompt: str) -> str:
-#         """调用本地LLM"""
-#         try:
-#             import requests
-#
-#             payload = {
-#                 "model": "gpt-3.5-turbo",
-#                 "messages": [{"role": "user", "content": prompt}],
-#                 "max_tokens": 500,
-#                 "temperature": 0.3
-#             }
-#
-#             response = requests.post(
-#                 "http://localhost:1234/v1/chat/completions",
-#                 json=payload,
-#                 timeout=60
-#             )
-#
-#             if response.status_code == 200:
-#                 result = response.json()
-#                 return result['choices'][0]['message']['content'].strip()
-#             else:
-#                 return "翻译失败"
-#
-#         except Exception as e:
-#             return f"错误: {str(e)}"
-#
-#     def _call_gpt(self, prompt: str) -> str:
-#         """调用GPT"""
-#         try:
-#             from chat_tool import openapi_client
-#
-#             response = openapi_client.chat.completions.create(
-#                 model="Design-4o-mini",
-#                 messages=[{"role": "user", "content": prompt}],
-#                 max_tokens=500,
-#                 temperature=0.3
-#             )
-#
-#             return response.choices[0].message.content.strip()
-#
-#         except Exception as e:
-#             return f"错误: {str(e)}"
+            # 解析失败时返回空结构
+            log_error(f"JSON解析失败，原始响应: {response[:200]}...")
+            return {"suggestions": [], "normalized_labels": {}}
 
 
 # 简化的数据管理模块
@@ -1013,17 +926,17 @@ def create_gradio_interface():
                     label="选择模型",
                     value="GPT"
                 )
-                target_lang = gr.Textbox(
-                    label="目标语言",
-                    value="英文"
-                )
+                # target_lang = gr.Textbox(
+                #     label="目标语言",
+                #     value="英文"
+                # )
 
             translate_btn = gr.Button("开始翻译", variant="primary")
             translation_status = gr.Textbox(label="翻译状态")
 
             translate_btn.click(
                 fn=system.translate_labels,
-                inputs=[translation_prompt, trans_model, target_lang],
+                inputs=[translation_prompt, trans_model],
                 outputs=[translation_status]
             )
 
