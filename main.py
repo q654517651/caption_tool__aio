@@ -817,7 +817,7 @@ def create_gradio_interface():
 
             with gr.Row():
                 normalize_model = gr.Radio(
-                    choices=["本地LLM Studio", "GPT"],
+                    choices=["LLM_Studio", "GPT"],
                     label="选择模型",
                     value="GPT"
                 )
