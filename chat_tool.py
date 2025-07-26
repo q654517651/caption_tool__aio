@@ -73,7 +73,7 @@ class AIChatTool:
         try:
             # 转换为枚举类型
             if isinstance(model_type, str):
-                model_type = ModelType(model_type.upper())
+                model_type = ModelType[model_type]
 
             messages = self.build_messages(prompt, content, image_path)
 
@@ -125,5 +125,5 @@ class AIChatTool:
 
 if __name__ == "__main__":
     ai = AIChatTool()
-    text = ai.call_chatai(model_type=ModelType.GPT, prompt="你好")
+    text = ai.call_chatai(model_type="LLM_Studio", prompt="你好")
     print(text)
