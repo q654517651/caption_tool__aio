@@ -15,6 +15,7 @@ from datetime import datetime
 import base64
 from PIL import Image
 import io
+from chat_tool import AIChatTool, ModelType
 
 
 # 简单的日志记录
@@ -30,6 +31,7 @@ class SimpleImageLabelingSystem:
     def __init__(self):
         # 核心数据
         self.current_folder = ""
+        # 保存扫描到的图片
         self.images = []
         self.labels = {}
 
@@ -38,9 +40,10 @@ class SimpleImageLabelingSystem:
         self.normalization_preview = {}
 
         # AI打标模块
-        self.ai_labeler = AILabeler()
-        self.tag_normalizer = TagNormalizer()
-        self.translator = Translator()
+        # self.ai_labeler = AILabeler()
+        self.ai_chat_tool = AIChatTool()
+        self.tag_normalizer = TagNormalizer(self.ai_chat_tool)
+        # self.translator = Translator()
         self.dataset_manager = DatasetManager()
 
         # 配置
@@ -183,7 +186,7 @@ class SimpleImageLabelingSystem:
 
         return stats_html + ''.join(html_parts)
 
-    def start_ai_labeling(self, prompt: str, model_type: str, batch_size: int, delay: float) -> str:
+    def start_ai_labeling(self, prompt: str, model_type: str, delay: float) -> str:
         """开始AI打标"""
         try:
             # 只标注未标注的图片
@@ -198,10 +201,13 @@ class SimpleImageLabelingSystem:
             for i, img_path in enumerate(unlabeled_images):
                 try:
                     # 调用AI进行标注
-                    if model_type == "本地LLM Studio":
-                        label_text = self.ai_labeler.call_local_llm(img_path, prompt)
-                    else:  # GPT
-                        label_text = self.ai_labeler.call_gpt(img_path, prompt)
+                    label_text = self.ai_chat_tool.call_chatai(model_type=model_type, prompt=prompt,
+                                                               image_path=img_path)
+                    # if model_type == "本地LLM Studio":
+                    #     label_text = self.ai_chat_tool.call_chatai(model_type=ModelType.LOCAL, prompt=prompt,
+                    #                                                image_path=img_path)
+                    # else:  # GPT
+                    #     label_text = self.ai_labeler.call_gpt(img_path, prompt)
 
                     if label_text and not label_text.startswith("错误"):
                         self.labels[img_path] = label_text
@@ -421,7 +427,7 @@ class SimpleImageLabelingSystem:
             for img_path, original_label in labels_to_translate.items():
                 try:
                     # 调用翻译
-                    translated = self.translator.translate(original_label, prompt, model_type, target_lang)
+                    translated = self.ai_chat_tool.call_chatai(model_type=model_type,prompt=prompt,content=original_label)
 
                     if translated and not translated.startswith("错误"):
                         # 保存翻译结果到新文件
@@ -491,124 +497,127 @@ class SimpleImageLabelingSystem:
 
 
 # AI标注模块
-class AILabeler:
-    def __init__(self):
-        self.llm_studio_url = "http://localhost:1234/v1"
-
-    def encode_image_to_base64(self, image_path: str) -> str:
-        """将图片编码为base64"""
-        try:
-            with Image.open(image_path) as img:
-                # 调整大小
-                max_size = (1024, 1024)
-                img.thumbnail(max_size, Image.Resampling.LANCZOS)
-
-                buffer = io.BytesIO()
-                img.save(buffer, format='JPEG', quality=85)
-                img_str = base64.b64encode(buffer.getvalue()).decode()
-                return img_str
-        except Exception as e:
-            log_error(f"图片编码失败 {image_path}: {e}")
-            return ""
-
-    def call_gpt(self, image_path: str, prompt: str) -> str:
-        """调用GPT（需要根据实际情况修改）"""
-        try:
-            # 导入GPT调用模块
-            from chat_tool import get_completion, encode_image_to_base64
-
-            img_base64 = encode_image_to_base64(image_path)
-            result = get_completion(control="customize", prompt=prompt, content=img_base64)
-
-            return result if result else "GPT调用失败"
-
-        except Exception as e:
-            log_error(f"GPT调用错误: {e}")
-            return f"错误: {str(e)}"
-
-    def call_local_llm(self, image_path: str, prompt: str) -> str:
-        """调用本地LLM Studio"""
-        try:
-            import requests
-
-            base64_image = self.encode_image_to_base64(image_path)
-            if not base64_image:
-                return "图片编码失败"
-
-            payload = {
-                "model": "gpt-4-vision-preview",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                "max_tokens": 500,
-                "temperature": 0.3
-            }
-
-            response = requests.post(
-                f"{self.llm_studio_url}/chat/completions",
-                json=payload,
-                timeout=60
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content'].strip()
-            else:
-                return f"本地LLM调用失败: {response.status_code}"
-
-        except Exception as e:
-            log_error(f"本地LLM调用失败: {e}")
-            return f"错误: {str(e)}"
+# class AILabeler:
+#     def __init__(self):
+#         self.llm_studio_url = "http://localhost:1234/v1"
+#
+#     def encode_image_to_base64(self, image_path: str) -> str:
+#         """将图片编码为base64"""
+#         try:
+#             with Image.open(image_path) as img:
+#                 # 调整大小
+#                 max_size = (1024, 1024)
+#                 img.thumbnail(max_size, Image.Resampling.LANCZOS)
+#
+#                 buffer = io.BytesIO()
+#                 img.save(buffer, format='JPEG', quality=85)
+#                 img_str = base64.b64encode(buffer.getvalue()).decode()
+#                 return img_str
+#         except Exception as e:
+#             log_error(f"图片编码失败 {image_path}: {e}")
+#             return ""
+#
+#     def call_gpt(self, image_path: str, prompt: str) -> str:
+#         """调用GPT（需要根据实际情况修改）"""
+#         try:
+#             # 导入GPT调用模块
+#             from chat_tool import get_completion, encode_image_to_base64
+#
+#             img_base64 = encode_image_to_base64(image_path)
+#             result = get_completion(control="customize", prompt=prompt, content=img_base64)
+#
+#             return result if result else "GPT调用失败"
+#
+#         except Exception as e:
+#             log_error(f"GPT调用错误: {e}")
+#             return f"错误: {str(e)}"
+#
+#     def call_local_llm(self, image_path: str, prompt: str) -> str:
+#         """调用本地LLM Studio"""
+#         try:
+#             import requests
+#
+#             base64_image = self.encode_image_to_base64(image_path)
+#             if not base64_image:
+#                 return "图片编码失败"
+#
+#             payload = {
+#                 "model": "gpt-4-vision-preview",
+#                 "messages": [
+#                     {
+#                         "role": "user",
+#                         "content": [
+#                             {"type": "text", "text": prompt},
+#                             {
+#                                 "type": "image_url",
+#                                 "image_url": {
+#                                     "url": f"data:image/jpeg;base64,{base64_image}"
+#                                 }
+#                             }
+#                         ]
+#                     }
+#                 ],
+#                 "max_tokens": 500,
+#                 "temperature": 0.3
+#             }
+#
+#             response = requests.post(
+#                 f"{self.llm_studio_url}/chat/completions",
+#                 json=payload,
+#                 timeout=60
+#             )
+#
+#             if response.status_code == 200:
+#                 result = response.json()
+#                 return result['choices'][0]['message']['content'].strip()
+#             else:
+#                 return f"本地LLM调用失败: {response.status_code}"
+#
+#         except Exception as e:
+#             log_error(f"本地LLM调用失败: {e}")
+#             return f"错误: {str(e)}"
 
 
 # 标签归一化模块
 class TagNormalizer:
+    def __init__(self, ai_chat_tool):
+        self.ai_chat_tool = ai_chat_tool
+
     def analyze_normalization(self, labels_dict: Dict[str, str], model_type: str) -> dict:
         """分析需要归一化的标签"""
         try:
             # 构建发送给AI的内容
             prompt = """请分析以下图像标签，找出需要归一化的内容。
-请识别：
-1. 相似或重复的描述
-2. 可以统一的表达方式
-3. 需要修正的格式问题
-
-标签列表：
-"""
+                        请识别：
+                        1. 相似或重复的描述
+                        2. 可以统一的表达方式
+                        3. 需要修正的格式问题
+                        
+                        标签列表：
+                        """
 
             for img_name, label in labels_dict.items():
                 prompt += f"\n{img_name}: {label}"
 
-            prompt += """
-
-请返回JSON格式的归一化建议，确保JSON完整且格式正确：
-{
-    "suggestions": [
-        {"原始": "xxx", "建议": "yyy", "原因": "zzz"}
-    ],
-    "normalized_labels": {
-        "图片名": "归一化后的标签"
-    }
-}
-
-重要：请确保返回完整的JSON，不要包含其他说明文字。"""
+            prompt += """请返回JSON格式的归一化建议，确保JSON完整且格式正确：
+                    {
+                        "suggestions": [
+                            {"原始": "xxx", "建议": "yyy", "原因": "zzz"}
+                        ],
+                        "normalized_labels": {
+                            "图片名": "归一化后的标签"
+                        }
+                    }
+                    
+                    重要：请确保返回完整的JSON，不要包含其他说明文字。"""
 
             # 调用AI
-            if model_type == "本地LLM Studio":
-                result = self._call_local_llm_text(prompt)
-            else:
-                result = self._call_gpt_text(prompt)
+            result = self.ai_chat_tool.call_chatai(model_type=model_type,prompt=prompt)
+
+            # if model_type == "本地LLM Studio":
+            #     result = self._call_local_llm_text(prompt)
+            # else:
+            #     result = self._call_gpt_text(prompt)
 
             log_info(f"AI返回的原始结果前500字符: {result[:500]}...")
 
@@ -705,119 +714,119 @@ class TagNormalizer:
         except Exception:
             return None
 
-    def _call_local_llm_text(self, prompt: str) -> str:
-        """调用本地LLM（纯文本）"""
-        try:
-            import requests
-
-            payload = {
-                "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 2500,
-                "temperature": 0.1
-            }
-
-            response = requests.post(
-                "http://localhost:1234/v1/chat/completions",
-                json=payload,
-                timeout=120
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-
-                # 检查是否被截断
-                finish_reason = result['choices'][0].get('finish_reason', '')
-                if finish_reason == 'length':
-                    log_error("LLM响应被截断，请增加max_tokens")
-
-                return content
-            else:
-                log_error(f"LLM调用失败: {response.status_code}")
-                return "调用失败"
-
-        except Exception as e:
-            log_error(f"LLM调用异常: {e}")
-            return f"错误: {str(e)}"
-
-    def _call_gpt_text(self, prompt: str) -> str:
-        """调用GPT（纯文本）"""
-        try:
-            from chat_tool import openapi_client
-
-            response = openapi_client.chat.completions.create(
-                model="Design-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
-                temperature=0.1
-            )
-
-            return response.choices[0].message.content
-
-        except Exception as e:
-            log_error(f"GPT调用异常: {e}")
-            return f"错误: {str(e)}"
+    # def _call_local_llm_text(self, prompt: str) -> str:
+    #     """调用本地LLM（纯文本）"""
+    #     try:
+    #         import requests
+    #
+    #         payload = {
+    #             "model": "gpt-3.5-turbo",
+    #             "messages": [{"role": "user", "content": prompt}],
+    #             "max_tokens": 2500,
+    #             "temperature": 0.1
+    #         }
+    #
+    #         response = requests.post(
+    #             "http://localhost:1234/v1/chat/completions",
+    #             json=payload,
+    #             timeout=120
+    #         )
+    #
+    #         if response.status_code == 200:
+    #             result = response.json()
+    #             content = result['choices'][0]['message']['content']
+    #
+    #             # 检查是否被截断
+    #             finish_reason = result['choices'][0].get('finish_reason', '')
+    #             if finish_reason == 'length':
+    #                 log_error("LLM响应被截断，请增加max_tokens")
+    #
+    #             return content
+    #         else:
+    #             log_error(f"LLM调用失败: {response.status_code}")
+    #             return "调用失败"
+    #
+    #     except Exception as e:
+    #         log_error(f"LLM调用异常: {e}")
+    #         return f"错误: {str(e)}"
+    #
+    # def _call_gpt_text(self, prompt: str) -> str:
+    #     """调用GPT（纯文本）"""
+    #     try:
+    #         from chat_tool import openapi_client
+    #
+    #         response = openapi_client.chat.completions.create(
+    #             model="Design-4o-mini",
+    #             messages=[{"role": "user", "content": prompt}],
+    #             max_tokens=2000,
+    #             temperature=0.1
+    #         )
+    #
+    #         return response.choices[0].message.content
+    #
+    #     except Exception as e:
+    #         log_error(f"GPT调用异常: {e}")
+    #         return f"错误: {str(e)}"
 
 
 # 翻译模块
-class Translator:
-    def translate(self, text: str, prompt: str, model_type: str, target_lang: str) -> str:
-        """翻译文本"""
-        try:
-            full_prompt = f"{prompt}\n\n{text}"
-
-            if model_type == "本地LLM Studio":
-                return self._call_local_llm(full_prompt)
-            else:
-                return self._call_gpt(full_prompt)
-
-        except Exception as e:
-            return f"错误: {str(e)}"
-
-    def _call_local_llm(self, prompt: str) -> str:
-        """调用本地LLM"""
-        try:
-            import requests
-
-            payload = {
-                "model": "gpt-3.5-turbo",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 500,
-                "temperature": 0.3
-            }
-
-            response = requests.post(
-                "http://localhost:1234/v1/chat/completions",
-                json=payload,
-                timeout=60
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content'].strip()
-            else:
-                return "翻译失败"
-
-        except Exception as e:
-            return f"错误: {str(e)}"
-
-    def _call_gpt(self, prompt: str) -> str:
-        """调用GPT"""
-        try:
-            from chat_tool import openapi_client
-
-            response = openapi_client.chat.completions.create(
-                model="Design-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=500,
-                temperature=0.3
-            )
-
-            return response.choices[0].message.content.strip()
-
-        except Exception as e:
-            return f"错误: {str(e)}"
+# class Translator:
+#     def translate(self, text: str, prompt: str, model_type: str, target_lang: str) -> str:
+#         """翻译文本"""
+#         try:
+#             full_prompt = f"{prompt}\n\n{text}"
+#
+#             if model_type == "本地LLM Studio":
+#                 return self._call_local_llm(full_prompt)
+#             else:
+#                 return self._call_gpt(full_prompt)
+#
+#         except Exception as e:
+#             return f"错误: {str(e)}"
+#
+#     def _call_local_llm(self, prompt: str) -> str:
+#         """调用本地LLM"""
+#         try:
+#             import requests
+#
+#             payload = {
+#                 "model": "gpt-3.5-turbo",
+#                 "messages": [{"role": "user", "content": prompt}],
+#                 "max_tokens": 500,
+#                 "temperature": 0.3
+#             }
+#
+#             response = requests.post(
+#                 "http://localhost:1234/v1/chat/completions",
+#                 json=payload,
+#                 timeout=60
+#             )
+#
+#             if response.status_code == 200:
+#                 result = response.json()
+#                 return result['choices'][0]['message']['content'].strip()
+#             else:
+#                 return "翻译失败"
+#
+#         except Exception as e:
+#             return f"错误: {str(e)}"
+#
+#     def _call_gpt(self, prompt: str) -> str:
+#         """调用GPT"""
+#         try:
+#             from chat_tool import openapi_client
+#
+#             response = openapi_client.chat.completions.create(
+#                 model="Design-4o-mini",
+#                 messages=[{"role": "user", "content": prompt}],
+#                 max_tokens=500,
+#                 temperature=0.3
+#             )
+#
+#             return response.choices[0].message.content.strip()
+#
+#         except Exception as e:
+#             return f"错误: {str(e)}"
 
 
 # 简化的数据管理模块
@@ -829,7 +838,7 @@ def create_gradio_interface():
     """创建Gradio界面"""
     system = SimpleImageLabelingSystem()
 
-    with gr.Blocks(title="简化版图像打标系统", theme=gr.themes.Soft()) as interface:
+    with gr.Blocks(title="简化版图像打标系统", theme=gr.themes.Soft(), fill_width=True) as interface:
         gr.Markdown("# 🏷️ 简化版图像打标系统")
 
         with gr.Tab("📁 数据加载"):
@@ -869,9 +878,9 @@ def create_gradio_interface():
 
             with gr.Row():
                 model_choice = gr.Radio(
-                    choices=["本地LLM Studio", "GPT"],
+                    choices=["LLM Studio", "GPT"],
                     label="选择模型",
-                    value="GPT"
+                    value="LLM Studio"
                 )
                 delay_slider = gr.Slider(
                     minimum=0.5,
@@ -885,7 +894,7 @@ def create_gradio_interface():
             labeling_status = gr.Textbox(label="打标状态")
 
             start_labeling_btn.click(
-                fn=lambda p, m, d: system.start_ai_labeling(p, m, 1, d),
+                fn=lambda p, m, d: system.start_ai_labeling(prompt=p, model_type=m, delay=d),
                 inputs=[prompt_input, model_choice, delay_slider],
                 outputs=[labeling_status]
             )
@@ -1000,7 +1009,7 @@ def create_gradio_interface():
 
             with gr.Row():
                 trans_model = gr.Radio(
-                    choices=["本地LLM Studio", "GPT"],
+                    choices=["LLM_Studio", "GPT"],
                     label="选择模型",
                     value="GPT"
                 )

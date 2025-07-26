@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any, Union
 
 class ModelType(Enum):
     GPT = "GPT"
-    LOCAL = "LOCAL"
+    LLM_Studio = "LLM_Studio"
 
 
 class AIChatTool:
@@ -79,8 +79,10 @@ class AIChatTool:
 
             if model_type == ModelType.GPT:
                 return self._call_gpt(messages)
-            else:
+            elif model_type == ModelType.LLM_Studio:
                 return self._call_local_llm(messages)
+            else:
+                raise Exception(f"<UNK>{model_type}<UNK>")
 
         except Exception as e:
             return f"模型调用失败: {str(e)}"
