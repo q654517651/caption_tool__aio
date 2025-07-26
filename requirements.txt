@@ -2,3 +2,4 @@ gradio
 pandas
 Pillow
 openai
+requests

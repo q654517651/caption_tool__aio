@@ -134,7 +134,7 @@ class SimpleImageLabelingSystem:
             try:
                 with Image.open(img_path) as img:
                     # 创建缩略图
-                    img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                    img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
                     buffer = io.BytesIO()
                     img.save(buffer, format='JPEG', quality=85)
                     img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -515,7 +515,7 @@ class AILabeler:
         """调用GPT（需要根据实际情况修改）"""
         try:
             # 导入GPT调用模块
-            from use_gpt import get_completion, encode_image_to_base64
+            from chat_tool import get_completion, encode_image_to_base64
 
             img_base64 = encode_image_to_base64(image_path)
             result = get_completion(control="customize", prompt=prompt, content=img_base64)
@@ -744,7 +744,7 @@ class TagNormalizer:
     def _call_gpt_text(self, prompt: str) -> str:
         """调用GPT（纯文本）"""
         try:
-            from use_gpt import openapi_client
+            from chat_tool import openapi_client
 
             response = openapi_client.chat.completions.create(
                 model="Design-4o-mini",
@@ -805,7 +805,7 @@ class Translator:
     def _call_gpt(self, prompt: str) -> str:
         """调用GPT"""
         try:
-            from use_gpt import openapi_client
+            from chat_tool import openapi_client
 
             response = openapi_client.chat.completions.create(
                 model="Design-4o-mini",
