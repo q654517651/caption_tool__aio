@@ -1,7 +1,16 @@
 import os
 import time
 from typing import Dict, List
-from main import log_error, log_info
+from datetime import datetime
+
+
+# 简单的日志记录
+def log_info(message):
+    print(f"[INFO] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}")
+
+
+def log_error(message):
+    print(f"[ERROR] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {message}")
 
 
 # 简化的标签归一化模块

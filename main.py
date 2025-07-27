@@ -37,11 +37,8 @@ class SimpleImageLabelingSystem:
         self.normalization_preview = {}
 
         # AI打标模块
-        # self.ai_labeler = AILabeler()
         self.ai_chat_tool = AIChatTool()
         self.tag_normalizer = TagNormalizer(self.ai_chat_tool)
-        # self.translator = Translator()
-        # self.dataset_manager = DatasetManager()
 
         # 配置
         self.config = {
