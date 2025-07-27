@@ -5,13 +5,14 @@ import os
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 import pandas as pd
 from datetime import datetime
 import base64
 from PIL import Image
 import io
 from chat_tool import AIChatTool
+from tag_normalizer_tool import TagNormalizer
 
 
 # 简单的日志记录
@@ -40,7 +41,7 @@ class SimpleImageLabelingSystem:
         self.ai_chat_tool = AIChatTool()
         self.tag_normalizer = TagNormalizer(self.ai_chat_tool)
         # self.translator = Translator()
-        self.dataset_manager = DatasetManager()
+        # self.dataset_manager = DatasetManager()
 
         # 配置
         self.config = {
@@ -53,7 +54,8 @@ class SimpleImageLabelingSystem:
         # 支持的图像格式
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff', '.webp'}
 
-    def _default_labeling_prompt(self) -> str:
+    @staticmethod
+    def _default_labeling_prompt() -> str:
         """默认的打标提示词"""
         return """你是一名图像理解专家，请根据以下图片内容，生成自然流畅、具体清晰的图像描述。要求如下：
                 1. 使用简洁准确的中文句子；
@@ -259,7 +261,6 @@ class SimpleImageLabelingSystem:
 
         return stats_html + ''.join(html_parts)
 
-
     def start_ai_labeling(self, prompt: str, model_type: str, delay: float) -> str:
         """开始AI打标"""
         try:
@@ -308,75 +309,6 @@ class SimpleImageLabelingSystem:
             error_msg = f"AI标注失败: {str(e)}"
             log_error(error_msg)
             return error_msg
-
-
-    def analyze_normalization(self, model_type: str) -> Tuple[str, str]:
-        """分析归一化规则，返回规则描述和对比表格"""
-        try:
-            # 收集所有标签
-            all_labels = {}
-            for img_path, label_text in self.labels.items():
-                if label_text and label_text.strip():
-                    all_labels[os.path.basename(img_path)] = label_text
-
-            if not all_labels:
-                return "没有标签需要归一化", ""
-
-            # 调用TagNormalizer进行分析
-            analysis_result = self.tag_normalizer.analyze_normalization(all_labels, model_type)
-
-
-            if isinstance(analysis_result, dict) and 'normalized_labels' in analysis_result:
-                # 生成规则描述和对比表格
-                rules_html = self.tag_normalizer.generate_rules_display()
-                comparison_html = self.tag_normalizer.generate_comparison_table(self.labels)
-                return rules_html, comparison_html
-            else:
-                error_msg = f"分析失败: {analysis_result.get('error', '未知错误')}"
-                return error_msg, ""
-
-        except Exception as e:
-            error_msg = f"归一化分析失败: {str(e)}"
-            log_error(error_msg)
-            return error_msg, ""
-
-
-    def apply_normalization(self) -> str:
-        """应用归一化修改"""
-        try:
-            # 调用TagNormalizer应用归一化
-            new_labels, changes_count = self.tag_normalizer.apply_normalization(self.labels, self.images)
-
-            if changes_count == 0:
-                return "没有需要修改的标签"
-
-            # 更新标签并保存到文件
-            for img_path in self.images:
-                img_name = os.path.basename(img_path)
-                if img_name in new_labels and self.labels[img_path] != new_labels[img_path]:
-                    self.labels[img_path] = new_labels[img_path]
-
-                    # 保存到文件
-                    txt_path = os.path.splitext(img_path)[0] + '.txt'
-                    with open(txt_path, 'w', encoding='utf-8') as f:
-                        f.write(new_labels[img_path])
-
-                    log_info(f"归一化修改: {img_name}")
-
-                # 清除分析结果
-                self.tag_normalizer.clear_analysis()
-
-            return f"✅ 归一化完成！成功修改了 {changes_count} 个标签"
-
-        except Exception as e:
-            error_msg = f"应用归一化失败: {str(e)}"
-            log_error(error_msg)
-            return error_msg
-
-    def cancel_normalization(self) -> str:
-        """取消归一化修改"""
-        self.normalization_analysis = None
-        return "❌ 已取消归一化操作"
 
     def translate_labels(self, prompt: str, model_type: str) -> str:
         """翻译标签"""
@@ -466,221 +398,6 @@ class SimpleImageLabelingSystem:
             return f"保存失败: {str(e)}"
 
 
-# 标签归一化模块
-class TagNormalizer:
-    def __init__(self, ai_chat_tool):
-        self.ai_chat_tool = ai_chat_tool
-        self.analysis_result = None
-        self.batch_size = 25  # 每批处理的标签数量
-
-    def analyze_normalization(self, labels_dict: Dict[str, str], model_type: str) -> dict:
-        """分批分析需要归一化的标签"""
-        try:
-            if not labels_dict:
-                return {"error": "没有标签需要归一化"}
-
-            # 分批处理
-            label_items = list(labels_dict.items())
-            batches = [label_items[i:i + self.batch_size]
-                       for i in range(0, len(label_items), self.batch_size)]
-
-            log_info(f"将 {len(label_items)} 个标签分成 {len(batches)} 批处理")
-
-            all_suggestions = []
-            all_normalized = {}
-
-            # 分批分析
-            for batch_idx, batch in enumerate(batches, 1):
-                log_info(f"处理第 {batch_idx}/{len(batches)} 批")
-
-                batch_result = self._analyze_batch(dict(batch), model_type)
-                if "error" not in batch_result:
-                    all_suggestions.extend(batch_result.get("suggestions", []))
-                    all_normalized.update(batch_result.get("normalized_labels", {}))
-
-                # 批次间延迟
-                if batch_idx < len(batches):
-                    time.sleep(1)
-
-            # 合并结果
-            self.analysis_result = {
-                "suggestions": all_suggestions,
-                "normalized_labels": all_normalized
-            }
-
-            return self.analysis_result
-
-        except Exception as e:
-            log_error(f"归一化分析失败: {e}")
-            return {"error": str(e)}
-
-    def _analyze_batch(self, batch_labels: Dict[str, str], model_type: str) -> dict:
-        """分析单批标签"""
-        prompt = f"""请分析以下 {len(batch_labels)} 个图像标签，找出需要归一化的内容。
-                请识别相似表达、格式问题等需要统一的地方。
-                
-                标签列表："""
-
-        for img_name, label in batch_labels.items():
-            prompt += f"\n{img_name}: {label}"
-
-        prompt += """请返回JSON格式：
-                {
-                    "suggestions": [{"原始": "xxx", "建议": "yyy", "原因": "zzz"}],
-                    "normalized_labels": {"图片名": "归一化后的标签"}
-                }
-                只返回JSON，不要其他文字。"""
-
-        try:
-            result = self.ai_chat_tool.call_chatai(model_type=model_type, prompt=prompt)
-            return self._parse_json_response(result) or {"suggestions": [], "normalized_labels": {}}
-        except Exception as e:
-            log_error(f"批次分析失败: {e}")
-            return {"suggestions": [], "normalized_labels": {}}
-
-    def generate_rules_display(self) -> str:
-        """生成归一化规则HTML显示"""
-        if not self.analysis_result or 'suggestions' not in self.analysis_result:
-            return "<p>没有找到归一化建议</p>"
-
-        suggestions = self.analysis_result.get('suggestions', [])
-        normalized_count = len(self.analysis_result.get('normalized_labels', {}))
-
-        html = f"""
-        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
-            <h3 style='color: #2c3e50; margin-bottom: 15px;'>🔍 归一化规则分析</h3>
-        """
-
-        if suggestions:
-            for i, suggestion in enumerate(suggestions[:10], 1):  # 只显示前10条
-                html += f"""
-                <div style='background: white; padding: 12px; margin: 8px 0; border-left: 4px solid #3498db; border-radius: 4px;'>
-                    <h4 style='color: #2980b9; margin: 0 0 8px 0;'>规则 {i}</h4>
-                    <p style='margin: 5px 0;'><strong>原始:</strong> {suggestion.get('原始', 'N/A')}</p>
-                    <p style='margin: 5px 0;'><strong>建议:</strong> {suggestion.get('建议', 'N/A')}</p>
-                    <p style='margin: 5px 0; color: #7f8c8d;'><strong>原因:</strong> {suggestion.get('原因', 'N/A')}</p>
-                </div>
-                """
-
-            if len(suggestions) > 10:
-                html += f"<p style='text-align: center; color: #7f8c8d;'>... 还有 {len(suggestions) - 10} 条规则未显示</p>"
-        else:
-            html += "<p>没有找到需要归一化的规则</p>"
-
-        html += f"""
-        <div style='background: #e8f5e8; padding: 10px; border-radius: 5px; margin-top: 15px;'>
-            <h4 style='margin: 0 0 10px 0; color: #27ae60;'>📊 统计信息</h4>
-            <p style='margin: 5px 0;'>发现规则数: {len(suggestions)}</p>
-            <p style='margin: 5px 0;'>需修改标签: {normalized_count}</p>
-        </div></div>
-        """
-
-        return html
-
-    def generate_comparison_table(self, original_labels: Dict[str, str]) -> str:
-        """生成修改前后对比表格"""
-        if not self.analysis_result or 'normalized_labels' not in self.analysis_result:
-            return "<p>没有对比数据</p>"
-
-        normalized_labels = self.analysis_result['normalized_labels']
-
-        html = """
-        <div style='background: #f8f9fa; padding: 15px; border-radius: 8px; margin: 10px 0;'>
-            <h3 style='color: #2c3e50; margin-bottom: 15px;'>📋 标签修改对比</h3>
-            <div style='overflow-x: auto;'>
-                <table style='width: 100%; border-collapse: collapse; background: white; border-radius: 5px; overflow: hidden;'>
-                    <thead>
-                        <tr style='background: #34495e; color: white;'>
-                            <th style='padding: 12px; text-align: left; width: 200px;'>图片名称</th>
-                            <th style='padding: 12px; text-align: left;'>修改前</th>
-                            <th style='padding: 12px; text-align: left;'>修改后</th>
-                            <th style='padding: 12px; text-align: center; width: 100px;'>状态</th>
-                        </tr>
-                    </thead><tbody>
-        """
-
-        for img_path, original_label in original_labels.items():
-            if not original_label or not original_label.strip():
-                continue
-
-            img_name = os.path.basename(img_path)
-            normalized_label = normalized_labels.get(img_name, original_label)
-            has_changes = original_label != normalized_label
-
-            status_color = "#e74c3c" if has_changes else "#27ae60"
-            status_text = "需修改" if has_changes else "无变化"
-            row_bg = "#fff5f5" if has_changes else "#f0fff0"
-
-            html += f"""
-            <tr style='background: {row_bg}; border-bottom: 1px solid #ecf0f1;'>
-                <td style='padding: 12px; font-weight: bold; word-break: break-word;'>{img_name}</td>
-                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{original_label}</td>
-                <td style='padding: 12px; max-width: 300px; word-wrap: break-word;'>{normalized_label}</td>
-                <td style='padding: 12px; text-align: center;'>
-                    <span style='color: {status_color}; font-weight: bold;'>{status_text}</span>
-                </td>
-            </tr>
-            """
-
-        html += "</tbody></table></div></div>"
-        return html
-
-    def apply_normalization(self, labels_dict: Dict[str, str], images: List[str]) -> Tuple[Dict[str, str], int]:
-        """应用归一化，返回新标签字典和修改数量"""
-        if not self.analysis_result or 'normalized_labels' not in self.analysis_result:
-            return labels_dict, 0
-
-        normalized_labels = self.analysis_result['normalized_labels']
-        new_labels = labels_dict.copy()
-        changes_count = 0
-
-        for img_path in images:
-            img_name = os.path.basename(img_path)
-            if img_name in normalized_labels:
-                new_label = normalized_labels[img_name]
-                if new_labels[img_path] != new_label:
-                    new_labels[img_path] = new_label
-                    changes_count += 1
-
-        return new_labels, changes_count
-
-    def clear_analysis(self):
-        """清除分析结果"""
-        self.analysis_result = None
-
-    @staticmethod
-    def _parse_json_response(response: str) -> dict:
-        """精简的JSON解析方法"""
-        try:
-            # 直接尝试解析整个响应
-            return json.loads(response)
-        except json.JSONDecodeError:
-            try:
-                # 如果失败，尝试提取JSON部分
-                json_start = response.find('{')
-                json_end = response.rfind('}')
-
-                if json_start != -1 and json_end != -1 and json_end > json_start:
-                    json_str = response[json_start:json_end + 1]
-                    parsed = json.loads(json_str)
-
-                    # 简单验证必要字段
-                    if "suggestions" in parsed or "normalized_labels" in parsed:
-                        return parsed
-
-            except json.JSONDecodeError:
-                pass
-
-            # 解析失败时返回空结构
-            log_error(f"JSON解析失败，原始响应: {response[:200]}...")
-            return {"suggestions": [], "normalized_labels": {}}
-
-
-# 简化的数据管理模块
-class DatasetManager:
-    pass
-
-
 def create_gradio_interface():
     """创建Gradio界面"""
     system = SimpleImageLabelingSystem()
@@ -746,105 +463,147 @@ def create_gradio_interface():
                 outputs=[labeling_status]
             )
 
+        # 简化后的Gradio界面 - 直接调用TagNormalizer
+
         with gr.Tab("🔄 标签归一化"):
-            gr.Markdown("### 步骤1: 分析归一化规则")
+            gr.Markdown("### 📋 三步归一化流程")
 
-            with gr.Row():
-                normalize_model = gr.Radio(
-                    choices=["LLM_Studio", "GPT"],
-                    label="选择模型",
-                    value="GPT"
-                )
-                analyze_btn = gr.Button("分析归一化规则", variant="primary")
+            # 模型选择
+            normalize_model = gr.Radio(
+                choices=["LLM_Studio", "GPT"],
+                label="选择AI模型",
+                value="GPT"
+            )
 
-            # 显示归一化规则
+            # 第一步：分析规则
+            gr.Markdown("#### 步骤1️⃣: 分析归一化规则")
+            step1_btn = gr.Button("🔍 分析归一化规则", variant="primary")
             rules_display = gr.HTML(label="归一化规则", visible=False)
 
-            gr.Markdown("### 步骤2: 预览修改对比")
-            # 显示修改前后对比
+            # 第二步：应用规则
+            gr.Markdown("#### 步骤2️⃣: 应用规则生成对比")
+            step2_btn = gr.Button("🔄 应用规则处理标签", variant="secondary", visible=False)
             comparison_display = gr.HTML(label="标签修改对比", visible=False)
 
-            gr.Markdown("### 步骤3: 确认并应用修改")
+            # 第三步：保存更改
+            gr.Markdown("#### 步骤3️⃣: 确认并保存")
             with gr.Row():
-                apply_btn = gr.Button("✅ 确认并应用修改", variant="primary", visible=False)
-                cancel_btn = gr.Button("❌ 取消修改", variant="secondary", visible=False)
+                step3_save_btn = gr.Button("✅ 保存更改", variant="primary", visible=False)
+                step3_cancel_btn = gr.Button("❌ 取消更改", variant="secondary", visible=False)
 
-            normalization_status = gr.Textbox(label="操作状态", lines=3)
+            # 状态显示
+            normalization_status = gr.Textbox(label="操作状态", lines=2)
 
-            def analyze_normalization_rules(model):
-                system.config['model_type'] = model
-                rules_html, comparison_html = system.analyze_normalization(model)
+            def step1_analyze_rules(model):
+                """第一步：直接分析规则"""
+                try:
+                    # 收集标签数据
+                    all_labels = {}
+                    for img_path, label_text in system.labels.items():
+                        if label_text and label_text.strip():
+                            all_labels[os.path.basename(img_path)] = label_text
 
-                # 判断是否有有效的分析结果
-                has_results = bool(
-                    system.normalization_analysis and 'normalized_labels' in system.normalization_analysis)
+                    if not all_labels:
+                        return "<p>没有标签需要归一化</p>", gr.update(visible=False), gr.update(
+                            visible=False), "❌ 没有可用标签"
 
-                return (
-                    rules_html,
-                    comparison_html,
-                    gr.update(visible=has_results),  # rules_display
-                    gr.update(visible=has_results),  # comparison_display
-                    gr.update(visible=has_results),  # apply_btn
-                    gr.update(visible=has_results),  # cancel_btn
-                    "✅ 分析完成，请查看规则和对比结果" if has_results else "❌ 分析失败或没有需要归一化的内容"
-                )
+                    # 直接调用TagNormalizer
+                    rules_html = system.tag_normalizer.step1_analyze_rules(all_labels, model)
+                    has_rules = system.tag_normalizer.has_rules()
 
-            def apply_normalization_changes():
-                result = system.apply_normalization()
-                return (
-                    result,
-                    gr.update(visible=False),  # rules_display
-                    gr.update(visible=False),  # comparison_display
-                    gr.update(visible=False),  # apply_btn
-                    gr.update(visible=False),  # cancel_btn
-                    system.create_image_gallery_html()  # 更新图片显示
-                )
+                    return (
+                        rules_html,
+                        gr.update(visible=has_rules),  # rules_display
+                        gr.update(visible=has_rules),  # step2_btn
+                        "✅ 规则分析完成，请查看规则内容" if has_rules else "❌ 未找到归一化规则"
+                    )
+                except Exception as e:
+                    log_error(f"规则分析失败: {e}")
+                    return f"<p>规则分析失败: {str(e)}</p>", gr.update(visible=False), gr.update(
+                        visible=False), f"❌ 分析失败: {str(e)}"
 
-            def cancel_normalization_changes():
-                result = system.cancel_normalization()
-                return (
-                    result,
-                    gr.update(visible=False),  # rules_display
-                    gr.update(visible=False),  # comparison_display
-                    gr.update(visible=False),  # apply_btn
-                    gr.update(visible=False),  # cancel_btn
-                )
+            def step2_apply_rules(model):
+                """第二步：直接应用规则"""
+                try:
+                    # 直接调用TagNormalizer
+                    comparison_html = system.tag_normalizer.step2_apply_rules(model)
+                    has_changes = system.tag_normalizer.has_changes()
 
-            analyze_btn.click(
-                fn=analyze_normalization_rules,
+                    return (
+                        comparison_html,
+                        gr.update(visible=has_changes),  # comparison_display
+                        gr.update(visible=has_changes),  # step3_save_btn
+                        gr.update(visible=has_changes),  # step3_cancel_btn
+                        "✅ 规则应用完成，请查看对比结果" if has_changes else "❌ 规则应用失败"
+                    )
+                except Exception as e:
+                    log_error(f"应用规则失败: {e}")
+                    return f"<p>应用规则失败: {str(e)}</p>", gr.update(visible=False), gr.update(
+                        visible=False), gr.update(visible=False), f"❌ 应用失败: {str(e)}"
+
+            def step3_save_changes():
+                """第三步：直接保存更改"""
+                try:
+                    # 直接调用TagNormalizer保存
+                    result = system.tag_normalizer.step3_save_changes(system.images)
+
+                    # 如果保存成功，重新加载标签
+                    if result.startswith("✅"):
+                        system.load_existing_labels()
+
+                    return (
+                        result,
+                        gr.update(visible=False),  # rules_display
+                        gr.update(visible=False),  # step2_btn
+                        gr.update(visible=False),  # comparison_display
+                        gr.update(visible=False),  # step3_save_btn
+                        gr.update(visible=False),  # step3_cancel_btn
+                        system.create_image_gallery_html()  # 刷新图片显示
+                    )
+                except Exception as e:
+                    log_error(f"保存更改失败: {e}")
+                    return f"❌ 保存失败: {str(e)}", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+            def step3_cancel_changes():
+                """取消更改"""
+                try:
+                    result = system.tag_normalizer.cancel_changes()
+
+                    return (
+                        result,
+                        gr.update(visible=False),  # rules_display
+                        gr.update(visible=False),  # step2_btn
+                        gr.update(visible=False),  # comparison_display
+                        gr.update(visible=False),  # step3_save_btn
+                        gr.update(visible=False),  # step3_cancel_btn
+                    )
+                except Exception as e:
+                    log_error(f"取消操作失败: {e}")
+                    return f"❌ 取消失败: {str(e)}", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+            # 绑定事件
+            step1_btn.click(
+                fn=step1_analyze_rules,
                 inputs=[normalize_model],
-                outputs=[
-                    rules_display,
-                    comparison_display,
-                    rules_display,
-                    comparison_display,
-                    apply_btn,
-                    cancel_btn,
-                    normalization_status
-                ]
+                outputs=[rules_display, rules_display, step2_btn, normalization_status]
             )
 
-            apply_btn.click(
-                fn=apply_normalization_changes,
-                outputs=[
-                    normalization_status,
-                    rules_display,
-                    comparison_display,
-                    apply_btn,
-                    cancel_btn,
-                    gallery_display  # 更新主页面的图片显示
-                ]
+            step2_btn.click(
+                fn=step2_apply_rules,
+                inputs=[normalize_model],
+                outputs=[comparison_display, comparison_display, step3_save_btn, step3_cancel_btn, normalization_status]
             )
 
-            cancel_btn.click(
-                fn=cancel_normalization_changes,
-                outputs=[
-                    normalization_status,
-                    rules_display,
-                    comparison_display,
-                    apply_btn,
-                    cancel_btn
-                ]
+            step3_save_btn.click(
+                fn=step3_save_changes,
+                outputs=[normalization_status, rules_display, step2_btn, comparison_display, step3_save_btn,
+                         step3_cancel_btn, gallery_display]
+            )
+
+            step3_cancel_btn.click(
+                fn=step3_cancel_changes,
+                outputs=[normalization_status, rules_display, step2_btn, comparison_display, step3_save_btn,
+                         step3_cancel_btn]
             )
 
         with gr.Tab("🌐 标签翻译"):
