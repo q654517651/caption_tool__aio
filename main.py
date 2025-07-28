@@ -40,6 +40,10 @@ class SimpleImageLabelingSystem:
         self.ai_chat_tool = AIChatTool()
         self.tag_normalizer = TagNormalizer(self.ai_chat_tool)
 
+        # 翻译相关 - 新增这部分
+        self.translation_preview = {}
+        self.translation_ready = False
+
         # 配置
         self.config = {
             'labeling_prompt': self._default_labeling_prompt(),
@@ -275,11 +279,6 @@ class SimpleImageLabelingSystem:
                     # 调用AI进行标注
                     label_text = self.ai_chat_tool.call_chatai(model_type=model_type, prompt=prompt,
                                                                image_path=img_path)
-                    # if model_type == "本地LLM Studio":
-                    #     label_text = self.ai_chat_tool.call_chatai(model_type=ModelType.LOCAL, prompt=prompt,
-                    #                                                image_path=img_path)
-                    # else:  # GPT
-                    #     label_text = self.ai_labeler.call_gpt(img_path, prompt)
 
                     if label_text and not label_text.startswith("错误"):
                         self.labels[img_path] = label_text
@@ -307,8 +306,8 @@ class SimpleImageLabelingSystem:
             log_error(error_msg)
             return error_msg
 
-    def translate_labels(self, prompt: str, model_type: str) -> str:
-        """翻译标签"""
+    def translate_labels_preview(self, prompt: str, model_type: str) -> str:
+        """翻译标签预览"""
         try:
             # 收集需要翻译的标签
             labels_to_translate = {}
@@ -317,8 +316,10 @@ class SimpleImageLabelingSystem:
                     labels_to_translate[img_path] = label_text
 
             if not labels_to_translate:
-                return "没有标签需要翻译"
+                self.translation_ready = False
+                return "<p>没有标签需要翻译</p>"
 
+            self.translation_preview = {}
             success_count = 0
 
             # 逐个翻译
@@ -329,11 +330,10 @@ class SimpleImageLabelingSystem:
                                                                content=original_label)
 
                     if translated and not translated.startswith("错误"):
-                        # 保存翻译结果到新文件
-                        base_path = os.path.splitext(img_path)[0]
-                        translated_file = f"{base_path}_translated.txt"
-                        with open(translated_file, 'w', encoding='utf-8') as f:
-                            f.write(translated)
+                        self.translation_preview[img_path] = {
+                            'original': original_label,
+                            'translated': translated
+                        }
                         success_count += 1
 
                         log_info(f"翻译完成: {os.path.basename(img_path)}")
@@ -345,12 +345,161 @@ class SimpleImageLabelingSystem:
                     log_error(f"翻译失败 {img_path}: {e}")
                     continue
 
-            return f"翻译完成，成功翻译 {success_count}/{len(labels_to_translate)} 个标签"
+            # 生成对比HTML
+            if self.translation_preview:
+                self.translation_ready = True
+                return self.create_translation_comparison_html()
+            else:
+                self.translation_ready = False
+                return "<p>翻译失败，没有成功的翻译结果</p>"
 
         except Exception as e:
             error_msg = f"翻译失败: {str(e)}"
             log_error(error_msg)
-            return error_msg
+            self.translation_ready = False
+            return f"<p>{error_msg}</p>"
+
+    def create_translation_comparison_html(self) -> str:
+        """创建翻译对比HTML"""
+        if not self.translation_preview:
+            return "<p>没有翻译预览数据</p>"
+
+        html_parts = ["""
+        <div style='
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        '>
+            <h3 style='margin: 0 0 10px 0; font-size: 24px; font-weight: 600;'>🌐 翻译对比预览</h3>
+            <p style='margin: 0; font-size: 16px; opacity: 0.9;'>共 {count} 个标签待翻译</p>
+        </div>
+        <div style='
+            display: grid;
+            gap: 15px;
+            padding: 0;
+        '>
+        """.format(count=len(self.translation_preview))]
+
+        for img_path, translation_data in self.translation_preview.items():
+            img_name = os.path.basename(img_path)
+            original = translation_data['original']
+            translated = translation_data['translated']
+
+            item_html = f"""
+            <div style='
+                border: 2px solid #e5e7eb;
+                border-radius: 12px;
+                overflow: hidden;
+                background: white;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            '>
+                <div style='
+                    background: linear-gradient(90deg, #3b82f6, #1d4ed8);
+                    color: white;
+                    padding: 15px;
+                    font-weight: bold;
+                    font-size: 16px;
+                '>
+                    📄 {img_name}
+                </div>
+                <div style='padding: 20px;'>
+                    <div style='margin-bottom: 20px;'>
+                        <div style='
+                            font-weight: bold;
+                            color: #374151;
+                            margin-bottom: 8px;
+                            font-size: 14px;
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                        '>
+                            🇨🇳 原文
+                        </div>
+                        <div style='
+                            background: #fef3c7;
+                            border: 1px solid #fbbf24;
+                            padding: 15px;
+                            border-radius: 8px;
+                            font-size: 14px;
+                            line-height: 1.6;
+                            color: #92400e;
+                        '>
+                            {original}
+                        </div>
+                    </div>
+                    <div>
+                        <div style='
+                            font-weight: bold;
+                            color: #374151;
+                            margin-bottom: 8px;
+                            font-size: 14px;
+                            text-transform: uppercase;
+                            letter-spacing: 0.5px;
+                        '>
+                            🇺🇸 译文
+                        </div>
+                        <div style='
+                            background: #dcfce7;
+                            border: 1px solid #22c55e;
+                            padding: 15px;
+                            border-radius: 8px;
+                            font-size: 14px;
+                            line-height: 1.6;
+                            color: #166534;
+                        '>
+                            {translated}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """
+            html_parts.append(item_html)
+
+        html_parts.append("</div>")
+        return ''.join(html_parts)
+
+    def save_translations(self) -> str:
+        """保存翻译结果"""
+        try:
+            if not self.translation_preview:
+                return "❌ 没有翻译结果可保存"
+
+            success_count = 0
+            for img_path, translation_data in self.translation_preview.items():
+                try:
+                    # 直接覆盖原始txt文件
+                    txt_path = os.path.splitext(img_path)[0] + '.txt'
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(translation_data['translated'])
+
+                    # 更新内存中的标签
+                    self.labels[img_path] = translation_data['translated']
+                    success_count += 1
+
+                except Exception as e:
+                    log_error(f"保存翻译失败 {img_path}: {e}")
+
+            # 清空预览数据
+            self.translation_preview = {}
+            self.translation_ready = False
+
+            if success_count > 0:
+                return f"✅ 翻译保存完成，成功保存 {success_count} 个翻译结果"
+            else:
+                return "❌ 翻译保存失败"
+
+        except Exception as e:
+            error_msg = f"保存翻译失败: {str(e)}"
+            log_error(error_msg)
+            return f"❌ {error_msg}"
+
+    def cancel_translations(self) -> str:
+        """取消翻译"""
+        self.translation_preview = {}
+        self.translation_ready = False
+        return "✅ 已取消翻译操作"
 
     def save_dataset(self, format_type: str) -> str:
         """保存数据集"""
@@ -439,9 +588,9 @@ def create_gradio_interface():
 
             with gr.Row():
                 model_choice = gr.Radio(
-                    choices=["LLM Studio", "GPT"],
+                    choices=["LLM_Studio", "GPT"],
                     label="选择模型",
-                    value="LLM Studio"
+                    value="LLM_Studio"
                 )
                 delay_slider = gr.Slider(
                     minimum=0.5,
@@ -604,30 +753,106 @@ def create_gradio_interface():
             )
 
         with gr.Tab("🌐 标签翻译"):
+            gr.Markdown("### 📋 三步翻译流程")
+
+            # 模型选择和提示词
             translation_prompt = gr.Textbox(
                 label="翻译提示词",
                 value=system.config['translation_prompt'],
                 lines=5
             )
 
+            translate_model = gr.Radio(
+                choices=["LLM_Studio", "GPT"],
+                label="选择AI模型",
+                value="GPT"
+            )
+
+            # 第一步：开始翻译
+            gr.Markdown("#### 步骤1️⃣: 开始翻译并生成对比")
+            translate_step1_btn = gr.Button("🌐 开始翻译", variant="primary")
+            translation_comparison_display = gr.HTML(label="翻译对比", visible=False)
+
+            # 第二步：确认保存
+            gr.Markdown("#### 步骤2️⃣: 确认并保存")
             with gr.Row():
-                trans_model = gr.Radio(
-                    choices=["LLM_Studio", "GPT"],
-                    label="选择模型",
-                    value="GPT"
-                )
-                # target_lang = gr.Textbox(
-                #     label="目标语言",
-                #     value="英文"
-                # )
+                translate_save_btn = gr.Button("✅ 保存翻译", variant="primary", visible=False)
+                translate_cancel_btn = gr.Button("❌ 取消翻译", variant="secondary", visible=False)
 
-            translate_btn = gr.Button("开始翻译", variant="primary")
-            translation_status = gr.Textbox(label="翻译状态")
+            # 状态显示
+            translation_status = gr.Textbox(label="翻译状态", lines=2)
 
-            translate_btn.click(
-                fn=system.translate_labels,
-                inputs=[translation_prompt, trans_model],
-                outputs=[translation_status]
+            def start_translation(prompt, model):
+                """开始翻译"""
+                try:
+                    comparison_html = system.translate_labels_preview(prompt, model)
+                    has_results = system.translation_ready
+
+                    return (
+                        comparison_html,
+                        gr.update(visible=has_results),  # translation_comparison_display
+                        gr.update(visible=has_results),  # translate_save_btn
+                        gr.update(visible=has_results),  # translate_cancel_btn
+                        "✅ 翻译完成，请查看对比结果" if has_results else "❌ 翻译失败或没有可翻译内容"
+                    )
+                except Exception as e:
+                    log_error(f"翻译失败: {e}")
+                    return (
+                        f"<p>翻译失败: {str(e)}</p>",
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        gr.update(visible=False),
+                        f"❌ 翻译失败: {str(e)}"
+                    )
+
+            def save_translation_results():
+                """保存翻译结果"""
+                try:
+                    result = system.save_translations()
+
+                    return (
+                        result,
+                        gr.update(visible=False),  # translation_comparison_display
+                        gr.update(visible=False),  # translate_save_btn
+                        gr.update(visible=False),  # translate_cancel_btn
+                        system.create_image_gallery_html()  # 刷新图片显示
+                    )
+                except Exception as e:
+                    log_error(f"保存翻译失败: {e}")
+                    return f"❌ 保存失败: {str(e)}", gr.update(), gr.update(), gr.update(), gr.update()
+
+            def cancel_translation_results():
+                """取消翻译"""
+                try:
+                    result = system.cancel_translations()
+
+                    return (
+                        result,
+                        gr.update(visible=False),  # translation_comparison_display
+                        gr.update(visible=False),  # translate_save_btn
+                        gr.update(visible=False),  # translate_cancel_btn
+                    )
+                except Exception as e:
+                    log_error(f"取消翻译失败: {e}")
+                    return f"❌ 取消失败: {str(e)}", gr.update(), gr.update(), gr.update()
+
+            # 绑定事件
+            translate_step1_btn.click(
+                fn=start_translation,
+                inputs=[translation_prompt, translate_model],
+                outputs=[translation_comparison_display, translation_comparison_display, translate_save_btn,
+                         translate_cancel_btn, translation_status]
+            )
+
+            translate_save_btn.click(
+                fn=save_translation_results,
+                outputs=[translation_status, translation_comparison_display, translate_save_btn, translate_cancel_btn,
+                         gallery_display]
+            )
+
+            translate_cancel_btn.click(
+                fn=cancel_translation_results,
+                outputs=[translation_status, translation_comparison_display, translate_save_btn, translate_cancel_btn]
             )
 
         with gr.Tab("💾 数据管理"):

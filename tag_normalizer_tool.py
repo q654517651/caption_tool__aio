@@ -155,7 +155,7 @@ class TagNormalizer:
         for i, rule in enumerate(self.rules, 1):
             prompt += f"{i}. {rule}\n"
 
-        prompt += "\n请严格按照规则修改标签，保持原意不变。"
+        prompt += "\n请严格按照规则修改提示词，并转换为流畅的自然语言。"
         return prompt
 
     def _extract_rules_from_response(self, response: str) -> List[str]:

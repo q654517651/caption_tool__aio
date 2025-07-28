@@ -87,7 +87,7 @@ class AIChatTool:
         except Exception as e:
             return f"模型调用失败: {str(e)}"
 
-    def _call_gpt(self, messages: List[Dict[str, Any]], model: str = 'Design-4o-mini') -> str:
+    def _call_gpt(self, messages: List[Dict[str, Any]], model: str = 'Design-gpt-4o') -> str:
         try:
             response = self.openapi_client.chat.completions.create(
                 model=model,
