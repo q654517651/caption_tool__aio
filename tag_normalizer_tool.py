@@ -18,7 +18,7 @@ def log_error(message):
 class TagNormalizer:
     def __init__(self, ai_chat_tool):
         self.ai_chat_tool = ai_chat_tool
-        self.batch_size = 20
+        self.batch_size = 50
 
         # 三步流程的数据
         self.rules = []  # 第一步：规则列表
@@ -140,11 +140,12 @@ class TagNormalizer:
             prompt += f"\n{img_name}: {label}"
 
         prompt += """
-
-请找出可以统一的表达方式、格式问题等，返回3-5条具体的归一化规则。
-每条规则格式：规则描述|修改原因
-例如：将"一位女性"统一为"女性"|简化表达
-只返回规则列表，每行一条规则。"""
+                请从人物描述、姿态动作、背景环境、画面风格等方面，找出表述不一致或风格不统一的内容。
+                每条规则格式如下：
+                规则描述|修改原因
+                例如：将"一位女性"统一为"女性"|简化表达
+                
+                请不要添加开头说明或总结，只返回规则列表，每行一条"""
 
         return prompt
 
