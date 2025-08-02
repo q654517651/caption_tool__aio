@@ -14,7 +14,7 @@ class ModelType(Enum):
 class AIChatTool:
     def __init__(self,
                  config_path: str = 'gpt_key.json',
-                 llm_studio_url: str = "http://localhost:1234/v1"
+                 llm_studio_url: str = "http://127.0.0.1:8888/v1"
                  ):
 
         self.llm_studio_url = llm_studio_url
