@@ -65,6 +65,7 @@ class SimpleImageLabelingSystem:
 4. 将描述结构划分为以下模块，并标明模块标题；
 5. 如果角色是面对镜头，注意左右手的描述不要弄反
 6. 不同模块之间的描述不要重复
+7. 请确保描述中包含角色的服饰颜色、主要武器种类、手部动作、肢体姿态、背景元素、光效类型等关键视觉特征。
 
 【描述的参考示例】
 【主体与外貌】
@@ -89,7 +90,6 @@ class SimpleImageLabelingSystem:
 【环境与场景】
 【氛围与光效】
 【镜头视角信息】
-
 
 开始生成
 """
@@ -178,6 +178,11 @@ class SimpleImageLabelingSystem:
                 with Image.open(img_path) as img:
                     # 创建缩略图
                     img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+
+                    # 统一转换为RGB模式，这样可以处理所有情况
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+
                     buffer = io.BytesIO()
                     img.save(buffer, format='JPEG', quality=85)
                     img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -333,6 +338,35 @@ class SimpleImageLabelingSystem:
             error_msg = f"AI标注失败: {str(e)}"
             log_error(error_msg)
             return error_msg
+
+    def save_labels_from_gallery(self) -> str:
+        """保存从界面修改的标签"""
+        try:
+            if not self.images:
+                return "没有图片数据"
+
+            success_count = 0
+            for img_path in self.images:
+                try:
+                    # 保存标签到txt文件
+                    txt_path = os.path.splitext(img_path)[0] + '.txt'
+                    label_text = self.labels.get(img_path, "")
+
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(label_text)
+
+                    success_count += 1
+
+                except Exception as e:
+                    log_error(f"保存标签失败 {img_path}: {e}")
+                    continue
+
+            return f"标签保存完成，成功保存 {success_count}/{len(self.images)} 个标签文件"
+
+        except Exception as e:
+            error_msg = f"保存标签失败: {str(e)}"
+            log_error(error_msg)
+            return f"{error_msg}"
 
     def translate_labels_preview(self, prompt: str, model_type: str) -> str:
         """翻译标签预览"""
@@ -589,7 +623,12 @@ def create_gradio_interface():
 
             scan_status = gr.Textbox(label="扫描状态")
             gallery_display = gr.HTML(label="图片与标签")
-            refresh_btn = gr.Button("刷新显示")
+            with gr.Row():
+                refresh_btn = gr.Button("刷新显示")
+                save_labels_btn = gr.Button("💾 保存标签", variant="secondary")
+
+            # 添加保存状态显示
+            save_labels_status = gr.Textbox(label="保存状态")
 
             def scan_and_display(folder_path):
                 images, message = system.scan_images(folder_path)
@@ -605,6 +644,11 @@ def create_gradio_interface():
             refresh_btn.click(
                 fn=lambda: system.create_image_gallery_html(),
                 outputs=[gallery_display]
+            )
+
+            save_labels_btn.click(
+                fn=system.save_labels_from_gallery,
+                outputs=[save_labels_status]
             )
 
         with gr.Tab("🤖 AI打标"):
