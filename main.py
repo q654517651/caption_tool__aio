@@ -59,19 +59,17 @@ class SimpleImageLabelingSystem:
     def _default_labeling_prompt() -> str:
         """默认的打标提示词"""
         return """你是一名图像理解专家，请根据以下图片内容，生成自然流畅、具体清晰的图像描述。要求如下：
-1. 使用简洁准确的中文句子，句与句之间用逗号衔接；
+1. 使用简洁准确的中文句子，使用逗号进行连接；
 2. 避免使用“图中”、“这是一张图片”等冗余措辞；
 3. 语言风格自然、具象，不使用抽象形容词或主观感受；
-4. 将描述结构划分为以下模块，并标明模块标题；
-5. 如果角色是面对镜头，注意左右手的描述不要弄反
-6. 不同模块之间的描述不要重复
-7. 请确保描述中包含角色的服饰颜色、主要武器种类、手部动作、肢体姿态、背景元素、光效类型等关键视觉特征。
+4. 描述的内容不要重复
+5. 将描述结构划分为以下模块，并标明模块标题；
 
 【描述的参考示例】
 【主体与外貌】
-一位银白短发的男性角色，神情坚毅，目光直视前方，佩戴带有蓝色装饰的银色战盔，头部饰有披风状发饰。
+一位银白短发的男性角色，神情坚毅，目光直视前方，
 【服饰与道具】
-身穿银白色装甲，肩部设有高位护甲，胸口嵌有蓝色发光核心。左手持一柄龙首造型的能量长枪，右手自然下垂，手背覆盖护甲。
+佩戴带有蓝色装饰的银色战盔，头部饰有披风状发饰。身穿银白色装甲，肩部设有高位护甲，胸口嵌有蓝色发光核心。左手持一柄龙首造型的能量长枪，右手自然下垂，手背覆盖护甲。
 【动作与姿态】
 左腿踏出，右腿蹬地跃起，左手持枪向右上方突刺，身体前倾，披风和发饰随动作后扬，整体动作紧凑有力。
 【环境与场景】
@@ -79,7 +77,7 @@ class SimpleImageLabelingSystem:
 【氛围与光效】
 蓝白色能量线条环绕角色，长枪带出一道光弧，背景月光与冷色特效交织，营造出动势与压迫感。
 【镜头视角信息】
-仰视
+[仰视，俯视，平视]三选一
 
 【输出格式】
 请按以下模块生成描述：
@@ -97,13 +95,52 @@ class SimpleImageLabelingSystem:
     @staticmethod
     def _default_translation_prompt() -> str:
         """默认的翻译提示词"""
-        return """请将以下中文描述翻译成英文，保持原意不变，要求：
-                1. 翻译要准确、自然、流畅
-                2. 保持原文的描述顺序和重点
-                3. 使用适合AI绘画的描述风格
-                4. 直接输出翻译结果，不要加任何额外说明
-                
-                中文描述："""
+        return """【FLUX LoRA 图像打标专用翻译 Prompt】
+将下方中文描述翻译为英文，严格遵守以下硬性规则：
+
+1.准确传达原意，不得加入任何主观润色或感情色彩修饰。
+2.全句仅使用主动语态，每句动作锚点必须前置，静态锚点必须具备可视化实体描述（如发型、道具、环境元素）。
+3.每个视觉锚点必须拆解成一句独立短句，禁止在同一句出现多个动作、道具、服饰或背景信息。
+4.句子顺序固定为：主体外貌 → 动作姿态 → 服饰道具 → 场景背景 → 光效氛围，严禁顺序颠倒。
+5.句子之间仅使用英文逗号, 连接，不允许句子内部使用逗号。
+6.禁止使用“and / but / or”等连词，禁止使用被动语态，禁止任何修饰性从句。
+7.输出格式为：一整行英文逗号串，最后以英文句号. 结尾。
+8.仅输出英文翻译，不要输出任何标签、换行或解释说明。
+
+以下是一个翻译的参考示例
+原文：
+一位粉色长发的女性角色正漂浮在一个梦幻的深蓝色星空背景中，
+身着一袭无袖深蓝色连衣裙，
+裙摆呈现出亮黄色与粉色的渐变，
+她的右手握着一支蓝色细长画笔，
+画笔的末端流转着渐变的光彩，
+她轻盈悬空，
+左手优雅地伸出，
+触碰一只白色海豚的嘴部，
+双腿自然弯曲上扬，
+她周围漂浮着抽象的圆环与多彩的线条，
+远处有几条如锦鲤般的彩色元素在星空中游动，
+整个场景充满着彩虹般的渐变光效，
+营造出一种梦幻唯美的氛围。
+
+翻译
+A female character has long pink hair,
+She floats lightly in the air,
+She wears a sleeveless dark blue dress,
+The dress hem displays a gradient of bright yellow and pink,
+Her right hand holds a slender blue brush,
+The brush tip shimmers with a gradient of colors,
+Her left hand reaches out to touch the mouth of a white dolphin,
+Her legs bend naturally upwards,
+Abstract rings float around her,
+Colorful lines swirl through the scene,
+Several koi-like colorful elements swim in the distant starry background,
+The background shows a dark blue starry sky,
+Rainbow gradient light effects flow across the scene,
+Soft glowing colors create a dreamy and beautiful atmosphere.
+
+"""
+
 
     def scan_images(self, folder_path: str) -> Tuple[List[str], str]:
         """扫描文件夹中的图片"""

@@ -4,7 +4,12 @@ from openai import AzureOpenAI
 import json
 from enum import Enum
 from typing import Optional, List, Dict, Any, Union
+import openai
 
+openai.api_key = "sk-f4gLq2Ok2MWEqZmOE9494063591a4bC4A91d872fAfF5A843"
+
+openai.base_url = "https://api.gpt.ge/v1/"
+openai.default_headers = {"x-foo": "true"}
 
 class ModelType(Enum):
     GPT = "GPT"
@@ -34,6 +39,7 @@ class AIChatTool:
             )
         except Exception as e:
             raise Exception(f"初始化Azure客户端失败: {e}")
+
 
     @staticmethod
     def image_to_base64(file_path):
@@ -89,11 +95,18 @@ class AIChatTool:
 
     def _call_gpt(self, messages: List[Dict[str, Any]], model: str = 'Design-gpt-4o') -> str:
         try:
-            response = self.openapi_client.chat.completions.create(
-                model=model,
+            response = openai.chat.completions.create(
+                model="gpt-4o",
                 messages=messages,  # type: ignore
             )
             return response.choices[0].message.content
+
+        # try:
+        #     response = self.openapi_client.chat.completions.create(
+        #         model=model,
+        #         messages=messages,  # type: ignore
+        #     )
+        #     return response.choices[0].message.content
         except Exception as e:
             raise Exception(f"GPT调用失败: {e}")
 
