@@ -2,48 +2,88 @@
 
 import flet as ft
 import os
-import time
-from datetime import datetime
-import base64
-from PIL import Image
-import io
 import threading
+import time
+import asyncio
+from typing import cast, Optional
 
 
 # 导入服务模块
-from labeling_service import LabelingService
+from services.labeling_service import LabelingService
 # from translation_service import TranslationService
 from settings_manager import SettingsManager
+from services.terminal_service import TerminalService
+from services.dataset_manager import DatasetManager
+from views.datasets_view import DatasetsView
+from views.dialogs import DeleteConfirmDialog
+from views.dataset_detail_view import DatasetDetailView
+from views.dialogs import ToastService
+from services.event_bus import EventBus
+from services.job_queue import JobQueue
 from training_manager import TrainingManager
-from terminal_service import TerminalService
-from dataset_manager import DatasetManager
+from trainers.types import TrainingConfig, TrainingBackend
+from views.training_list_view import TrainingListView
+from views.training_detail_view import TrainingDetailView
+from services.navigation import NavigationService
 
-
+# 路由常量
+PATH_HOME = "/"
+PATH_DATASETS = "/datasets"
+PATH_TRAINING = "/training"
+PATH_TERMINAL = "/terminal"
+PATH_SETTINGS = "/settings"
 
 class ImageLabelingApp:
     """主应用类"""
 
     def __init__(self, page: ft.Page):
+        self.nav_rail = None
+        self.terminal_display = None
+        self.settings_status = None
+        self.unet_path_input = None
+        self.t5_path_input = None
+        self.clip_path_input = None
+        self.vae_path_input = None
+        self.musubi_dir_input = None
+        self.tensorboard_container = None
+        self.training_output = None
+        self.sample_prompts_input = None
+        self.lora_name_input = None
+        self.learning_rate_input = None
+        self.max_epochs_input = None
+        self.num_repeats_input = None
+        self.batch_size_input = None
+        self.resolution_input = None
+        self.dataset_type_radio = None
+        self.dataset_path_input = None
+        self._datasets_view = None
+        self._dataset_detail_view = None
+        self.current_dataset_id = None
+        self.main_content = None
+
+        self.content_host = ft.Container(expand=True)  # 中心内容区域
+
         self.page = page
 
-        self.is_web = getattr(self.page, "platform", None) == "web"
-        print("[INFO] platform:", getattr(self.page, "platform", None), "is_web:", self.is_web)
-
         # 初始化服务模块
+        self.nav = NavigationService(self.page, render_fn=self._render_route)
         self.terminal_service = TerminalService()
-        # self.labeling_service = LabelingService(self.terminal_service)
-        # self.translation_service = TranslationService()
         self.settings_manager = SettingsManager()
-        self.training_manager = TrainingManager(self.settings_manager)
         self.dataset_manager = DatasetManager()
+        self.labeling_service = LabelingService(self.terminal_service)
+        self.toast_service = ToastService(self.page)
+        self.toast = lambda msg, kind="info", duration=2000: \
+            self.toast_service.show(msg, kind=kind, duration=duration)
 
-        self.image_cards = []
+        self.dataset_manager.platform_mode = "web" if getattr(self.page, "platform", None) == "web" else "pc"
+
+        # 训练事件与队列（先单并发，后面再按GPU做限流）
+        self.bus = EventBus()
+        self.queue = JobQueue(self.bus, max_workers=1)
+        self.training_manager = TrainingManager(self.bus, self.queue)
+        self.current_training_detail = {}
+
         self.current_view = "data"  # 当前视图
-
-        # 在 MainApp 类中添加以下属性（在 __init__ 方法内）
-        self.datasets = []  # 存储所有数据集
-        self.current_dataset = None  # 当前选中的数据集
-        self.dataset_view = None  # 数据集视图容器
 
         # 配置页面
         self.page.title = "图像打标系统"
@@ -51,17 +91,34 @@ class ImageLabelingApp:
         self.page.window_width = 1400
         self.page.window_height = 900
 
-        self.file_picker = ft.FilePicker(on_result=self.on_files_selected)
+        self.file_picker = ft.FilePicker()
         self.page.overlay.append(self.file_picker)
+
+        self._labeling_refresh_stop = None
+        self._labeling_refresh_task = None  # 新增：控制“打标实时刷新”的停止信号
         self.page.update()
 
-        self.desktop_use_file_uri = True
         # 创建UI
         self.setup_ui()
 
     def setup_ui(self):
-        """设置UI"""
-        # 创建侧边导航
+        """设置UI（由 NavigationService 驱动）"""
+        # AppBar
+        self.page.appbar = ft.AppBar(title=ft.Text("图像打标系统"), center_title=False)
+
+        # 承载主内容的容器（如果外部还没创建就补上）
+        if not hasattr(self, "content_host") or self.content_host is None:
+            self.content_host = ft.Container(expand=True)
+
+        # 侧栏切换 -> 路由跳转
+        def _on_nav_change(e):
+            idx = e.control.selected_index
+            paths = [PATH_DATASETS, PATH_TRAINING, PATH_TERMINAL, PATH_SETTINGS]
+            if idx < 0 or idx >= len(paths):
+                idx = 0
+            self.nav.go(paths[idx])
+
+        # NavigationRail（保持你原来的样式和文案）
         self.nav_rail = ft.NavigationRail(
             selected_index=0,
             label_type=ft.NavigationRailLabelType.ALL,
@@ -94,228 +151,112 @@ class ImageLabelingApp:
                     label="设置"
                 )
             ],
-            on_change=self.nav_change
+            on_change=_on_nav_change
         )
 
-        # 创建主内容区域
-        self.main_content = ft.Container(expand=True)
-
-        # 添加到页面
+        # 页面主布局：侧栏 + 分割线 + 主内容容器
+        self.page.controls.clear()
         self.page.add(
-            ft.Row([
-                self.nav_rail,
-                ft.VerticalDivider(width=1),
-                self.main_content
-            ], expand=True)
-        )
-
-        # 默认显示数据加载页面
-        self.show_datasets_view()
-
-    def nav_change(self, e):
-        """导航变化事件"""
-        selected = e.control.selected_index
-
-        if selected == 0:
-            self.show_datasets_view()
-        elif selected == 1:
-            self.show_training_view()
-        elif selected == 2:
-            self.show_terminal_view()
-        elif selected == 3:
-            self.show_settings_view()
-
-    def load_datasets_list(self):
-        """加载数据集列表"""
-        self.datasets_list.controls.clear()
-
-        # 获取所有数据集
-        datasets = self.dataset_manager.list_datasets()
-
-        if not datasets:
-            self.datasets_list.controls.append(
-                ft.Text("没有数据集，请创建新数据集", italic=True, color=ft.Colors.GREY_600)
+            ft.Row(
+                controls=[self.nav_rail, ft.VerticalDivider(width=1), self.content_host],
+                expand=True
             )
-        else:
-            for dataset in datasets:
-                # 获取数据集统计信息
-                stats = dataset.get_stats()
-
-                # 创建数据集卡片
-                dataset_card = ft.Card(
-                    content=ft.Container(
-                        content=ft.Column([
-                            ft.ListTile(
-                                leading=ft.Icon(ft.Icons.FOLDER, color=ft.Colors.BLUE),
-                                title=ft.Text(dataset.name, weight=ft.FontWeight.BOLD),
-                                subtitle=ft.Text(f"创建于: {dataset.created_time}"),
-                                trailing=ft.PopupMenuButton(
-                                    icon=ft.Icons.MORE_VERT,
-                                    items=[
-                                        ft.PopupMenuItem(text="查看", icon=ft.Icons.VISIBILITY,
-                                                         on_click=lambda e, d=dataset: self.view_dataset(d.dataset_id)),
-                                        ft.PopupMenuItem(text="删除", icon=ft.Icons.DELETE,
-                                                         on_click=lambda e, d=dataset: self.confirm_delete_dataset(
-                                                             d.dataset_id))
-                                    ]
-                                )
-                            ),
-                            ft.Container(
-                                content=ft.Row([
-                                    ft.Text(f"图片数量: {stats['total']}"),
-                                    ft.Text(f"已标注: {stats['labeled']}"),
-                                    ft.Text(f"完成度: {stats['completion_rate']}%")
-                                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                                padding=ft.padding.symmetric(horizontal=15, vertical=5)
-                            ),
-                            ft.Container(
-                                content=ft.Row([
-                                    ft.FilledButton(
-                                        "查看内容",
-                                        icon=ft.Icons.VISIBILITY,
-                                        on_click=lambda e, d=dataset: self.view_dataset(d.dataset_id)
-                                    ),
-                                ], alignment=ft.MainAxisAlignment.END),
-                                padding=ft.padding.only(right=15, bottom=10)
-                            )
-                        ]),
-                        padding=ft.padding.all(5)
-                    ),
-                    elevation=2
-                )
-
-                self.datasets_list.controls.append(dataset_card)
-
-        self.page.update()
-
-    def create_dataset_immediately(self, e):
-        """直接创建一个数据集（按时间戳命名），无需弹窗"""
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        name = f"dataset_{timestamp}"
-        success, message = self.dataset_manager.create_dataset(name, "")
-        if success:
-            self.terminal_service.log_success(f"已创建数据集: {name}")
-            self.load_datasets_list()  # 立即刷新列表
-        else:
-            self.terminal_service.log_error(message)
-
-    def show_create_dataset_dialog(self, e):
-        """显示创建数据集对话框"""
-        name_field = ft.TextField(
-            label="数据集名称",
-            autofocus=True,
-            expand=True
         )
 
-        description_field = ft.TextField(
-            label="描述 (可选)",
-            multiline=True,
-            min_lines=2,
-            max_lines=4,
-            expand=True
-        )
+        # 默认进入“数据管理”页（通过路由驱动 _render_route）
+        self.nav.go(PATH_DATASETS)
 
-        def close_dialog():
-            self.page.dialog.open = False
-            self.page.update()
+    def _render_route(self, route: str):
+        # 1) 侧栏选中态
+        if route.startswith(PATH_TRAINING):
+            self.nav_rail.selected_index = 1
+        elif route.startswith(PATH_TERMINAL):
+            self.nav_rail.selected_index = 2
+        elif route.startswith(PATH_SETTINGS):
+            self.nav_rail.selected_index = 3
+        else:
+            self.nav_rail.selected_index = 0
 
-        def create_dataset():
-            name = name_field.value.strip()
-            description = description_field.value.strip()
-
-            if not name:
-                name_field.error_text = "请输入数据集名称"
-                self.page.update()
-                return
-
-            success, message = self.dataset_manager.create_dataset(name, description)
-
-            if success:
-                close_dialog()
-                self.load_datasets_list()
+        # 2) 路由分发
+        if route == PATH_TRAINING:
+            # 训练任务列表
+            # 复用已实例。如果第一次进入，这里构建一次
+            if not hasattr(self, "training_list"):
+                self.show_training_view()  # 内部会创建 self.training_list
             else:
-                name_field.error_text = message
-                self.page.update()
+                self.content_host.content = self.training_list
+        elif route.startswith(f"{PATH_TRAINING}/"):  # 任务详情
+            task_id = route.split("/", 2)[-1]
+            # 统一用已有详情缓存；不存在就让 show_training_view 创建
+            if not hasattr(self, "current_training_detail") or task_id not in self.current_training_detail:
+                self.show_training_view()  # 会把新建的 detail 放到缓存
+            if task_id in self.current_training_detail:
+                self.content_host.content = self.current_training_detail[task_id]
+        elif route.startswith(f"{PATH_DATASETS}/"):  # 数据集详情
+            ds_id = route.split("/", 2)[-1]
+            # 直接进入详情渲染
+            self.view_dataset(ds_id)
+        elif route == PATH_TERMINAL:
+            self.show_terminal_view()
+        elif route == PATH_SETTINGS:
+            self.show_settings_view()
+        else:
+            # 默认首页：数据集列表
+            self.show_datasets_view()
 
-        dialog = ft.AlertDialog(
-            title=ft.Text("创建新数据集"),
-            content=ft.Column([
-                name_field,
-                description_field
-            ], tight=True, spacing=10, width=400),
-            actions=[
-                ft.TextButton("取消", on_click=lambda e: close_dialog()),
-                ft.TextButton("创建", on_click=lambda e: create_dataset())
-            ],
-            actions_alignment=ft.MainAxisAlignment.END
+        # 3) 返回按钮显隐（AppBar 上）
+        is_detail = route.startswith(f"{PATH_TRAINING}/") or route.startswith(f"{PATH_DATASETS}/")
+        self.page.appbar.leading = (
+            ft.IconButton(icon=ft.Icons.ARROW_BACK, on_click=lambda e: self.nav.back())
+            if is_detail else None
         )
 
-        self.page.dialog = dialog
-        dialog.open = True
         self.page.update()
 
     def update_dataset_label(self, dataset_id, filename, label):
         """更新数据集标签"""
         self.dataset_manager.update_dataset_label(dataset_id, filename, label)
 
-    def confirm_delete_dataset(self, dataset_id):
-        """确认删除数据集"""
+    def confirm_delete_dataset(self, dataset_id: str):
+        """确认删除数据集（委托给 DeleteConfirmDialog 组件）"""
         dataset = self.dataset_manager.get_dataset(dataset_id)
         if not dataset:
+            self.toast("数据集不存在", kind="warning")
             return
 
-        # 1) 先生成对话框，占位按钮
-        dialog = ft.AlertDialog(
-            title=ft.Text("确认删除"),
-            content=ft.Text(f"确定要删除数据集『{dataset.name}』吗？"),
-            actions=[],  # 先空着，下面再填
-            modal=True,  # 可选：点击背景不关闭
-        )
-
-        # 2) 共用的关闭逻辑，方便复用
-        def close_dialog():
-            self.page.close(dialog)  # 关键：把 dialog 传进来
-            self.page.update()
-
-        # 3) 删除按钮回调
-        def delete_action(e):
-            print("[DEBUG] delete_action fired for id:", dataset_id)
+        def _do_delete():
             try:
                 success, msg = self.dataset_manager.delete_dataset(dataset_id)
-            finally:
-                close_dialog()  # 不管成功失败都先关弹窗
+            except Exception as ex:
+                success, msg = False, f"删除异常：{ex}"
 
             if success:
-                self.load_datasets_list()
-                self.page.snack_bar = ft.SnackBar(ft.Text("✅ 删除成功"))
+                # 刷新视图
+                if hasattr(self, "_datasets_view") and self._datasets_view:
+                    self._datasets_view.refresh()
+                self.toast(f"✅ 已删除：{dataset.name}", kind="success")
             else:
-                self.page.snack_bar = ft.SnackBar(ft.Text("❌ 删除失败"))
-            self.page.snack_bar.open = True
-            self.page.update()
+                self.toast(f"❌ 删除失败：{msg}", kind="error")
 
-        # 4) 把按钮补进去（此时 delete_action 可以捕获到 dialog 变量）
-        dialog.actions = [
-            ft.TextButton("取消", on_click=lambda e: close_dialog()),
-            ft.TextButton("删除", on_click=delete_action),
-        ]
+        DeleteConfirmDialog(
+            page=self.page,
+            item_name=dataset.name,
+            on_confirm=_do_delete,
+        ).open()
 
-        # 5) 打开对话框
-        self.page.open(dialog)
-
-
-
-
-    # 保留这一份 ―― 放在类方法区靠前位置即可
     def pick_files_for_dataset(self, dataset_id):
         """调用系统文件对话框并把选中文件导入到指定数据集"""
         self.page.update()  # 先刷新 UI，防止焦点被占用
-        self.file_picker.on_result = lambda e, d=dataset_id: self.on_files_selected(e, d)
+
+        # 这里的 on_result 回调必须是单参 (e)
+        # 把 dataset_id 闭包到外部作用域里
+        self.file_picker.on_result = lambda e: self.on_files_selected(e, dataset_id)
+
+        # 弹出文件选择对话框
         self.file_picker.pick_files(
             allow_multiple=True,
             allowed_extensions=["jpg", "jpeg", "png", "gif", "bmp", "txt"]
         )
-
-
 
     def on_files_selected(self, e, dataset_id):
         """文件选择器回调"""
@@ -329,629 +270,513 @@ class ImageLabelingApp:
                 self.terminal_service.log_success(message)
                 # 如果当前在数据集详情页，刷新图片列表
                 if self.current_view == "dataset_detail" and self.current_dataset_id == dataset_id:
-                    self.load_dataset_images(dataset_id)
+                    if hasattr(self, "_dataset_detail_view") and self._dataset_detail_view:
+                        self._dataset_detail_view.refresh_images()
             else:
                 self.terminal_service.log_error(message)
 
-    def batch_label_dataset_images(self, dataset_id):
-        """批量打标数据集图片"""
-        dataset = self.dataset_manager.get_dataset(dataset_id)
-        if not dataset or not dataset.images:
-            self.terminal_service.log_error("数据集为空或不存在")
-            return
+    # def toast(self, message: str):  # 可放到你的主类里，方便到处复用
+    #     self.page.snack_bar = ft.SnackBar(ft.Text(message))
+    #     self.page.snack_bar.open = True
+    #     self.page.update()
 
-        # 创建打标提示词输入对话框
-        prompt_field = ft.TextField(
-            label="打标提示词",
-            value=LabelingService.default_labeling_prompt(),
-            multiline=True,
-            min_lines=3,
-            max_lines=5,
-            expand=True
-        )
-
-        model_choice = ft.RadioGroup(
-            content=ft.Row([
-                ft.Radio(value="LLM_Studio", label="LLM_Studio"),
-                ft.Radio(value="GPT", label="GPT")
-            ]),
-            value="LLM_Studio"
-        )
-
-        def close_dialog():
-            self.page.dialog.open = False
-            self.page.update()
-
-        def start_labeling():
-            prompt = prompt_field.value
-            model = model_choice.value
-
-            if not prompt:
-                prompt_field.error_text = "请输入提示词"
-                self.page.update()
-                return
-
-            close_dialog()
-
-            # 开始打标处理
-            self.terminal_service.log_info(f"开始批量打标数据集: {dataset.name}")
-
-            # 这里应该调用实际的打标服务
-            # 为简化示例，这里只是模拟处理
-            def labeling_task():
-                unlabeled_images = {f: l for f, l in dataset.images.items() if not l.strip()}
-                total = len(unlabeled_images)
-
-                if total == 0:
-                    self.terminal_service.log_info("所有图片已有标签")
-                    return
-
-                for i, (filename, _) in enumerate(unlabeled_images.items()):
-                    # 模拟打标过程
-                    self.terminal_service.log_progress(f"正在打标 {filename} ({i + 1}/{total})")
-                    time.sleep(0.5)  # 模拟处理时间
-
-                    # 生成模拟标签
-                    new_label = f"AI生成的标签 - {filename}"
-                    self.dataset_manager.update_dataset_label(dataset_id, filename, new_label)
-
-                self.terminal_service.log_success(f"完成批量打标，处理了 {total} 个文件")
-
-                # 如果当前在数据集详情页，刷新图片列表
-                if self.current_view == "dataset_detail" and self.current_dataset_id == dataset_id:
-                    self.page.add_action(lambda: self.load_dataset_images(dataset_id))
-
-            # 在后台线程中执行
-            threading.Thread(target=labeling_task, daemon=True).start()
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("批量AI打标"),
-            content=ft.Column([
-                ft.Text("为未标注的图片生成标签"),
-                prompt_field,
-                ft.Text("选择模型:"),
-                model_choice
-            ], tight=True, spacing=10, width=400),
-            actions=[
-                ft.TextButton("取消", on_click=lambda e: close_dialog()),
-                ft.TextButton("开始打标", on_click=lambda e: start_labeling())
-            ],
-            actions_alignment=ft.MainAxisAlignment.END
-        )
-
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
-
-    def batch_translate_dataset_labels(self, dataset_id):
-        """批量翻译数据集标签"""
-        dataset = self.dataset_manager.get_dataset(dataset_id)
-        if not dataset:
-            return
-
-        # 创建翻译设置对话框
-        source_lang = ft.Dropdown(
-            label="源语言",
-            options=[
-                ft.dropdown.Option("auto", "自动检测"),
-                ft.dropdown.Option("en", "英语"),
-                ft.dropdown.Option("zh", "中文"),
-                ft.dropdown.Option("ja", "日语")
-            ],
-            value="auto"
-        )
-
-        target_lang = ft.Dropdown(
-            label="目标语言",
-            options=[
-                ft.dropdown.Option("en", "英语"),
-                ft.dropdown.Option("zh", "中文"),
-                ft.dropdown.Option("ja", "日语")
-            ],
-            value="zh"
-        )
-
-        def close_dialog():
-            self.page.dialog.open = False
-            self.page.update()
-
-        def start_translation():
-            from_lang = source_lang.value
-            to_lang = target_lang.value
-
-            if from_lang == to_lang and from_lang != "auto":
-                self.terminal_service.log_warning("源语言和目标语言相同")
-                return
-
-            close_dialog()
-
-            # 开始翻译处理
-            self.terminal_service.log_info(f"开始批量翻译数据集: {dataset.name}")
-
-            # 这里应该调用实际的翻译服务
-            # 为简化示例，这里只是模拟处理
-            def translation_task():
-                labeled_images = {f: l for f, l in dataset.images.items() if l.strip()}
-                total = len(labeled_images)
-
-                if total == 0:
-                    self.terminal_service.log_info("没有可翻译的标签")
-                    return
-
-                for i, (filename, label) in enumerate(labeled_images.items()):
-                    # 模拟翻译过程
-                    self.terminal_service.log_progress(f"正在翻译 {filename} ({i + 1}/{total})")
-                    time.sleep(0.5)  # 模拟处理时间
-
-                    # 生成模拟翻译
-                    translated = f"翻译后的标签: {label}"
-                    self.dataset_manager.update_dataset_label(dataset_id, filename, translated)
-
-                self.terminal_service.log_success(f"完成批量翻译，处理了 {total} 个文件")
-
-                # 如果当前在数据集详情页，刷新图片列表
-                if self.current_view == "dataset_detail" and self.current_dataset_id == dataset_id:
-                    self.page.add_action(lambda: self.load_dataset_images(dataset_id))
-
-            # 在后台线程中执行
-            threading.Thread(target=translation_task, daemon=True).start()
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("批量翻译标签"),
-            content=ft.Column([
-                ft.Text("翻译所有标签"),
-                source_lang,
-                target_lang
-            ], tight=True, spacing=10, width=400),
-            actions=[
-                ft.TextButton("取消", on_click=lambda e: close_dialog()),
-                ft.TextButton("开始翻译", on_click=lambda e: start_translation())
-            ],
-            actions_alignment=ft.MainAxisAlignment.END
-        )
-
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
-
-    def view_dataset(self, dataset_id):
-        """查看数据集详情"""
-        dataset = self.dataset_manager.get_dataset(dataset_id)
-        if not dataset:
+    def view_dataset(self, dataset_id: str):
+        ds = self.dataset_manager.get_dataset(dataset_id)
+        if not ds:
             self.terminal_service.log_error("数据集不存在")
+            self.toast("数据集不存在")
             return
 
         self.current_view = "dataset_detail"
         self.current_dataset_id = dataset_id
+        self.terminal_service.log_info(f"正在加载数据集: {ds.name}")
 
-        self.terminal_service.log_info(f"正在加载数据集: {dataset.name}")
+        def _on_back():
+            self.show_datasets_view()
 
-        # 返回和操作按钮
-        back_btn = ft.IconButton(
-            icon=ft.Icons.ARROW_BACK,
-            tooltip="返回数据集列表",
-            on_click=lambda e: self.show_datasets_view()
+        def _on_batch_translate(dsid: str):
+            self.toast("TODO: 批量翻译接入")
+
+        def _on_batch_label(dsid: str):
+            # 实现批量打标功能
+            self.batch_label_images(dsid)
+
+        def _on_import_files(dsid: str):
+            self.pick_files_for_dataset(dsid)
+
+        def _on_render_images(dsid: str, grid: ft.GridView):
+            """把原 load_dataset_images 的渲染逻辑搬过来，针对传入的 grid"""
+            grid.controls.clear()
+            dataset = self.dataset_manager.get_dataset(dsid)
+            if not dataset:
+                self.terminal_service.log_error("数据集不存在")
+                self.page.update()
+                return
+
+            if not dataset.images:
+                grid.controls.append(
+                    ft.Container(
+                        content=ft.Text("暂无图片，点击上方「导入文件」添加",
+                                        size=18, color=ft.Colors.GREY_600, italic=True),
+                        alignment=ft.alignment.center,
+                        height=200
+                    )
+                )
+                self.page.update()
+                return
+
+            # 更新数据集详情视图中的选中图片集合
+            if hasattr(self, '_dataset_detail_view') and self._dataset_detail_view:
+                # 为全选功能准备所有图片列表
+                self._dataset_detail_view.all_images = list(dataset.images.keys())
+
+            for filename, label in dataset.images.items():
+                try:
+                    info = self.dataset_manager.resolve_image_src(dsid, filename, kind="medium")
+                    src = info.get("src")
+                    if not src:
+                        self.terminal_service.log_error(f"无法解析图片资源: {filename}")
+                        continue
+
+                    abs_path = info.get("abs")
+                    if abs_path and not os.path.exists(abs_path):
+                        self.terminal_service.log_error(f"文件不存在: {abs_path}")
+
+                    image_widget = ft.Image(
+                        src=src,
+                        fit=ft.ImageFit.COVER,
+                        error_content=ft.Container(
+                            content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=50, color=ft.Colors.GREY),
+                            alignment=ft.alignment.center,
+                            bgcolor=ft.Colors.GREY_100
+                        )
+                    )
+
+                    # 检查图片是否被选中
+                    is_selected = (hasattr(self, '_dataset_detail_view') and
+                                   self._dataset_detail_view and
+                                   filename in self._dataset_detail_view.selected_images)
+
+                    # 创建图片卡片容器
+                    image_card = ft.Container(
+                        content=ft.Column([
+                            ft.Container(
+                                content=image_widget,
+                                height=200,
+                                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                            ),
+                            ft.Container(
+                                content=ft.Text(
+                                    filename[:30] + "..." if len(filename) > 30 else filename,
+                                    size=12, weight=ft.FontWeight.W_500
+                                ),
+                                padding=ft.padding.symmetric(horizontal=10, vertical=5)
+                            ),
+                            ft.Container(
+                                content=ft.TextField(
+                                    value=label,  # 这里使用从dataset.images中获取的标签
+                                    multiline=True,
+                                    text_size=12,
+                                    border=ft.InputBorder.NONE,
+                                    filled=True,
+                                    fill_color=ft.Colors.GREY_100,
+                                    on_change=lambda e, f=filename: self.update_dataset_label(
+                                        dsid, f, e.control.value
+                                    ),
+                                    expand=True,
+                                ),
+                                padding=ft.padding.only(left=10, right=10, bottom=10),
+                                expand=True,
+                            )
+                        ], spacing=0, expand=True),
+                        bgcolor=ft.Colors.WHITE if not is_selected else ft.Colors.BLUE_50,
+                        border_radius=8,
+                        shadow=ft.BoxShadow(
+                            spread_radius=1,
+                            blur_radius=4,
+                            color=ft.Colors.BLACK12,
+                            offset=ft.Offset(0, 2)
+                        ),
+                        border=ft.border.all(3, ft.Colors.BLUE) if is_selected else None,
+                        on_click=lambda e, f=filename: self.toggle_image_selection(dsid, f) if hasattr(self,
+                                                                                                       '_dataset_detail_view') and self._dataset_detail_view else None,
+                        data=filename,
+                    )
+
+                    grid.controls.append(image_card)
+
+                except Exception as ex:
+                    self.terminal_service.log_error(f"加载图片失败 {filename}: {ex}")
+                    grid.controls.append(
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Container(
+                                    content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=50, color=ft.Colors.GREY),
+                                    height=200,
+                                    alignment=ft.alignment.center,
+                                    bgcolor=ft.Colors.GREY_100
+                                ),
+                                ft.Container(
+                                    content=ft.Text(f"加载失败: {filename}", size=12, weight=ft.FontWeight.W_500),
+                                    padding=ft.padding.all(10)
+                                )
+                            ]),
+                            bgcolor=ft.Colors.WHITE,
+                            border_radius=8,
+                            width=300
+                        )
+                    )
+
+            self.page.update()
+
+        self._dataset_detail_view = DatasetDetailView(
+            page=self.page,
+            dataset_id=ds.dataset_id,
+            dataset_name=ds.name,
+            on_back=_on_back,
+            on_batch_translate=_on_batch_translate,
+            on_batch_label=_on_batch_label,
+            on_import_files=_on_import_files,
+            on_render_images=_on_render_images,  # ← 这里换成"渲染 grid"的回调
         )
 
-        batch_buttons = ft.Row([
-            ft.ElevatedButton("批量翻译", icon=ft.Icons.TRANSLATE,
-                              on_click=lambda e: self.batch_translate_dataset_labels(dataset_id)),
-            ft.ElevatedButton("批量打标", icon=ft.Icons.AUTO_AWESOME,
-                              on_click=lambda e: self.batch_label_dataset_images(dataset_id)),
-            ft.ElevatedButton("导入文件", icon=ft.Icons.UPLOAD_FILE,
-                              on_click=lambda e, d=dataset_id: self.pick_files_for_dataset(d))
-        ])
+        # 添加全选和清空选择的方法
+        def select_all_images(e):
+            if hasattr(self, '_dataset_detail_view') and self._dataset_detail_view:
+                self._dataset_detail_view.selected_images = set(self._dataset_detail_view.all_images)
+                self._dataset_detail_view.refresh_images()
 
-        # 使用 GridView 替代 ListView
-        self.image_grid = ft.GridView(
-            expand=1,
-            runs_count=0,  # 自动计算列数
-            max_extent=350,  # 每个项目的最大宽度
-            child_aspect_ratio=0.75,  # 宽高比
-            spacing=15,
-            run_spacing=15,
-            padding=ft.padding.all(20)
-        )
+        def clear_selection(e):
+            if hasattr(self, '_dataset_detail_view') and self._dataset_detail_view:
+                self._dataset_detail_view.selected_images.clear()
+                self._dataset_detail_view.refresh_images()
 
-        # 创建内容区域
-        content_area = ft.Column([
-            ft.Container(
-                content=ft.Row([
-                    back_btn,
-                    ft.Text(f"数据集: {dataset.name}", size=24, weight=ft.FontWeight.BOLD)
-                ]),
-                padding=ft.padding.all(20)
-            ),
-            ft.Container(content=batch_buttons, padding=ft.padding.symmetric(horizontal=20)),
-            ft.Container(
-                content=self.image_grid,
-                expand=True,
-                bgcolor=ft.Colors.GREY_50,
-                border_radius=10
-            )
-        ], expand=True)
+        # 将方法绑定到视图
+        self._dataset_detail_view.select_all_images = select_all_images
+        self._dataset_detail_view.clear_selection = clear_selection
 
-        # 直接渲染内容（去掉拖拽区域）
-        self.main_content.content = content_area
-
+        self.content_host.content = self._dataset_detail_view
         self.page.update()
 
-        # 延迟加载图片，确保UI先渲染
-        def delayed_load():
-            self.load_dataset_images(dataset_id)
+    def toggle_image_selection(self, dataset_id: str, filename: str):
+        """切换图片选择状态"""
+        if hasattr(self, '_dataset_detail_view') and self._dataset_detail_view:
+            self._dataset_detail_view.toggle_image_selection(filename)
 
-        # 使用page.run_task来在下一个事件循环中加载图片
-        import threading
-        threading.Timer(0.1, delayed_load).start()
+    def batch_label_images(self, dataset_id: str):
+        """批量打标选中的图片（UI 线程安全 + 实时刷新）"""
+        if not hasattr(self, '_dataset_detail_view') or not self._dataset_detail_view:
+            self.toast("视图未初始化")
+            return
 
-    def load_dataset_images(self, dataset_id):
-        """加载数据集图片（网格显示）
-        - PC：使用绝对路径（不加 file://）
-        - Web：使用相对 assets_dir 的 URL（datasets/<id>/...）
-        - 列表用中清晰度；必要时回退原图
-        """
-        import os
-
-        self.image_grid.controls.clear()
+        selected_images = self._dataset_detail_view.selected_images
+        if not selected_images:
+            self.toast("请先选择要打标的图片")
+            return
 
         dataset = self.dataset_manager.get_dataset(dataset_id)
         if not dataset:
-            self.terminal_service.log_error("数据集不存在")
-            self.page.update()
+            self.toast("数据集不存在")
             return
 
-        if not dataset.images:
-            self.image_grid.controls.append(
-                ft.Container(
-                    content=ft.Text("暂无图片，点击上方「导入文件」添加",
-                                    size=18, color=ft.Colors.GREY_600, italic=True),
-                    alignment=ft.alignment.center,
-                    height=200
-                )
-            )
-            self.page.update()
+        # 选中图片的完整路径
+        image_paths = []
+        for filename in selected_images:
+            image_path = self.dataset_manager.get_dataset_image_path(dataset_id, filename)
+            if image_path:
+                image_paths.append(image_path)
+        if not image_paths:
+            self.toast("没有找到选中的图片")
             return
 
-        # 平台判定
-        is_web = getattr(self.page, "platform", None) == "web"
+        prompt = self.labeling_service.default_labeling_prompt()
 
-        # 统一取图：Web -> url_for(相对路径)；PC -> 绝对路径（不加 file://）
-        def get_image_src(filename: str, kind: str = "medium") -> str | None:
-            try:
-                if is_web:
-                    # 例如: datasets/<id>/medium/xxx.jpg 或回退 datasets/<id>/images/<file>
-                    rel = self.dataset_manager.url_for(dataset_id, filename, kind=kind)
-                    if not rel:
-                        return None
-                    # （可选）存在性校验
-                    abs_check = os.path.join(self.dataset_manager.workspace_root, rel.replace("/", os.sep))
-                    if not os.path.exists(abs_check):
-                        self.terminal_service.log_error(f"Web路径不存在: {abs_check}")
-                    return rel
-                else:
-                    # 绝对路径（PC 最稳）
-                    if kind == "medium":
-                        p = self.dataset_manager.ensure_medium(dataset_id, filename)
-                    else:
-                        p = os.path.join(self.dataset_manager.get_images_dir(dataset_id), filename)
-                    p = os.path.abspath(p)
-                    if not os.path.exists(p):
-                        self.terminal_service.log_error(f"PC文件不存在: {p}")
-                        return None
-                    return p
-            except Exception as ex:
-                self.terminal_service.log_error(f"获取图片路径失败 {filename}: {ex}")
-                return None
-
-        # 渲染网格
-        for filename, label in dataset.images.items():
-            try:
-                src_medium = get_image_src(filename, "medium")
-                if not src_medium:
-                    continue
-
-                image_widget = ft.Image(
-                    src=src_medium,  # PC: 绝对路径；Web: 相对 assets_dir 的路径
-                    fit=ft.ImageFit.COVER,
-                    error_content=ft.Container(
-                        content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=50, color=ft.Colors.GREY),
-                        alignment=ft.alignment.center,
-                        bgcolor=ft.Colors.GREY_100
-                    )
-                )
-
-                image_card = ft.Container(
-                    content=ft.Column([
-                        ft.Container(
-                            content=image_widget,
-                            height=200,
-                            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                        ),
-                        ft.Container(
-                            content=ft.Text(
-                                filename[:30] + "..." if len(filename) > 30 else filename,
-                                size=12, weight=ft.FontWeight.W_500
-                            ),
-                            padding=ft.padding.symmetric(horizontal=10, vertical=5)
-                        ),
-                        ft.Container(
-                            content=ft.TextField(
-                                value=label,
-                                multiline=True,
-                                min_lines=2,
-                                max_lines=3,
-                                text_size=12,
-                                border=ft.InputBorder.NONE,
-                                filled=True,
-                                fill_color=ft.Colors.GREY_100,
-                                on_change=lambda e, f=filename: self.update_dataset_label(
-                                    dataset_id, f, e.control.value
-                                ),
-                            ),
-                            padding=ft.padding.only(left=10, right=10, bottom=10)
-                        )
-                    ], spacing=0),
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=8,
-                    shadow=ft.BoxShadow(
-                        spread_radius=1,
-                        blur_radius=4,
-                        color=ft.Colors.BLACK12,
-                        offset=ft.Offset(0, 2)
-                    )
-                )
-
-                self.image_grid.controls.append(image_card)
-
-            except Exception as ex:
-                self.terminal_service.log_error(f"加载图片失败 {filename}: {ex}")
-                self.image_grid.controls.append(
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Container(
-                                content=ft.Icon(ft.Icons.BROKEN_IMAGE, size=50, color=ft.Colors.GREY),
-                                height=200,
-                                alignment=ft.alignment.center,
-                                bgcolor=ft.Colors.GREY_100
-                            ),
-                            ft.Container(
-                                content=ft.Text(f"加载失败: {filename}", size=12, weight=ft.FontWeight.W_500),
-                                padding=ft.padding.all(10)
-                            )
-                        ]),
-                        bgcolor=ft.Colors.WHITE,
-                        border_radius=8,
-                        width=300
-                    )
-                )
-
+        # 打开进度弹窗（UI 线程）
+        progress_dialog = ft.AlertDialog(
+            title=ft.Text("正在打标"),
+            content=ft.Row([ft.ProgressRing(), ft.Text("  处理中...")], alignment=ft.MainAxisAlignment.CENTER),
+        )
+        self.page.dialog = progress_dialog
+        progress_dialog.open = True
         self.page.update()
+
+        # ==== 异步轮询刷新（运行在 UI 事件循环），不要在 run_task 里加括号！====
+        if getattr(self, "_labeling_refresh_stop", None) is not None:
+            self._labeling_refresh_stop.set()
+        self._labeling_refresh_stop = threading.Event()
+
+        async def live_refresh_loop():
+            # 在 UI 事件循环里安全刷新
+            try:
+                while not self._labeling_refresh_stop.is_set():
+                    self.update_label_texts(dataset.images)  # 内部会调用 self.page.update()
+                    await asyncio.sleep(0.4)
+            except Exception:
+                # 忽略刷新异常，避免打断主流程
+                pass
+
+        # 保存任务句柄（可选），注意这里传函数对象，不是调用！
+        self._labeling_refresh_task = self.page.run_task(live_refresh_loop)
+
+        # ==== 后台打标线程 ====
+        def run_labeling():
+            print("开始打标...")
+            try:
+                success_count, message = self.labeling_service.label_images(
+                    images=image_paths,
+                    labels=dataset.images,
+                    prompt=prompt,
+                    model_type="LM_Studio",
+                    delay=1.0,
+                )
+
+                # 持久化
+                self.dataset_manager.save_dataset(dataset_id)
+
+                # 停止刷新
+                if self._labeling_refresh_stop:
+                    self._labeling_refresh_stop.set()
+
+                async def finish_ui():
+                    # 保险再刷一次
+                    self.update_label_texts(dataset.images)
+                    # 关闭弹窗并提示
+                    self.page.dialog = None
+                    self.toast(f"打标完成: {message}")
+                    self.page.update()
+
+                # 这里也传函数，不要加括号！
+                self.page.run_task(finish_ui)
+
+            except Exception as e:
+                if self._labeling_refresh_stop:
+                    self._labeling_refresh_stop.set()
+
+                async def error_ui():
+                    self.page.dialog = None
+                    self.toast(f"打标失败: {str(e)}")
+                    self.page.update()
+                    self.terminal_service.log_error(f"批量打标失败: {str(e)}")
+
+                # 同样传函数，不要加括号！
+                self.page.run_task(error_ui)
+
+        threading.Thread(target=run_labeling, daemon=True).start()
+
+    def update_label_texts(self, images_dict: dict) -> None:
+        """就地刷新网格中每张卡片的标签文本；显式 cast 消除 'Control | None 没有 value' 报错"""
+        view = getattr(self, "_dataset_detail_view", None)
+        if view is None:
+            return
+
+        grid = getattr(view, "image_grid", None)
+        if not isinstance(grid, ft.GridView):
+            return
+
+        controls = getattr(grid, "controls", None)
+        if not isinstance(controls, list) or not controls:
+            return
+
+        def _resolve_filename(text_on_card: str) -> Optional[str]:
+            # 把可能被 ... 截断的显示名还原成真实文件名
+            if text_on_card in images_dict:
+                return text_on_card
+            if text_on_card.endswith("..."):
+                prefix = text_on_card[:-3]
+                for fname in images_dict.keys():
+                    if fname.startswith(prefix):
+                        return fname
+            return None
+
+        updated = 0
+
+        for card in controls:
+            if not isinstance(card, ft.Container):
+                continue
+            content = card.content
+            if not isinstance(content, ft.Column):
+                continue
+
+            # 1) 优先用 card.data（创建卡片时建议 data=filename）
+            card_filename = getattr(card, "data", None)
+
+            # 2) 回退：从第二行的 Text 里读显示名并还原
+            if not card_filename:
+                col = cast(ft.Column, content)
+                if len(col.controls) >= 2:
+                    filename_container = col.controls[1]
+                    if isinstance(filename_container, ft.Container) and isinstance(filename_container.content, ft.Text):
+                        text_ctrl = cast(ft.Text, filename_container.content)  # 显式 cast 消除 'value' 报错
+                        filename_text = (text_ctrl.value or "").strip()
+                        card_filename = _resolve_filename(filename_text)
+
+            if not card_filename or card_filename not in images_dict:
+                continue
+
+            # 3) 第三行应是 TextField，显式 cast 后再改 value
+            col = cast(ft.Column, content)
+            if len(col.controls) < 3:
+                continue
+            label_container = col.controls[2]
+            if not (isinstance(label_container, ft.Container) and isinstance(label_container.content, ft.TextField)):
+                continue
+            tf = cast(ft.TextField, label_container.content)  # 显式 cast
+            new_value = images_dict[card_filename]
+            if tf.value != new_value:
+                tf.value = new_value
+                updated += 1
+
+        if updated:
+            self.page.update()
+            try:
+                self.terminal_service.log_info(f"已更新 {updated} 个标签文本")
+            except Exception:
+                pass
+
+        if hasattr(view, "update_selection_ui"):
+            try:
+                view.update_selection_ui()
+            except Exception:
+                pass
 
     def show_datasets_view(self):
-        """显示数据集视图（无拖拽，统一用 FilePicker）"""
+        """显示数据集视图（独立视图类）"""
         self.current_view = "datasets"
 
-        # 数据集列表
-        self.datasets_list = ft.ListView(
-            expand=1,
-            spacing=10,
-            padding=10,
-            auto_scroll=True
+        # 实例化视图（把"查看/删除"的回调接回主类现有方法）
+        self._datasets_view = DatasetsView(
+            page=self.page,
+            dataset_manager=self.dataset_manager,
+            terminal_service=self.terminal_service,
+            on_open_dataset=self.view_dataset,
+            on_delete_dataset=self.confirm_delete_dataset,
         )
 
-        # 新建数据集
-        create_dataset_btn = ft.ElevatedButton(
-            text="创建新数据集",
-            icon=ft.Icons.ADD,
-            on_click=self.create_dataset_immediately
-        )
-
-        # 刷新
-        refresh_btn = ft.ElevatedButton(
-            text="刷新列表",
-            icon=ft.Icons.REFRESH,
-            on_click=lambda e: self.load_datasets_list()
-        )
-
-        # 顶部工具条（只保留按钮）
-        toolbar = ft.Container(
-            content=ft.Row(
-                [create_dataset_btn, refresh_btn],
-                alignment=ft.MainAxisAlignment.START,
-            ),
-            padding=ft.padding.symmetric(horizontal=20)
-        )
-
-        # 数据集列表容器
-        datasets_box = ft.Container(
-            content=self.datasets_list,
-            expand=True,
-            padding=ft.padding.all(20),
-            border=ft.border.all(1, ft.Colors.GREY_300),
-            border_radius=10,
-            margin=ft.margin.symmetric(horizontal=20),
-        )
-
-        # 组装
-        datasets_view = ft.Column(
-            [
-                ft.Container(
-                    content=ft.Text("📊 数据集管理", size=24, weight=ft.FontWeight.BOLD),
-                    padding=ft.padding.all(20),
-                ),
-                toolbar,
-                datasets_box,
-                # 🧹 已去掉拖拽提示区与 DragTarget
-            ],
-            expand=True,
-        )
-
-        self.main_content.content = datasets_view
+        # 挂到主容器并刷新
+        self.content_host.content = self._datasets_view.build()
         self.page.update()
 
-        # 加载数据集列表
-        self.load_datasets_list()
+        # 填充数据
+        self._datasets_view.refresh()
 
     def show_training_view(self):
-        """显示模型训练视图"""
-        self.current_view = "training"
+        # 列表视图
+        def create_task():
+            # 根据你的数据集管理器拿到默认数据集（这里示例拿第一个；你也可以用当前选择的）
+            datasets = self.dataset_manager.list_datasets()
+            if not datasets:
+                self.toast("没有数据集，先去创建一个", "warning")
+                return
+            ds = datasets[0]
+            ds_size = len(ds.images)
 
-        # 训练配置
-        self.dataset_path_input = ft.TextField(
-            label="数据集路径",
-            hint_text="选择包含datasets文件夹的根目录",
-            expand=True
-        )
-
-        self.dataset_type_radio = ft.RadioGroup(
-            content=ft.Row([
-                ft.Radio(value="image", label="图片"),
-                ft.Radio(value="video", label="视频")
-            ]),
-            value="image"
-        )
-
-        self.resolution_input = ft.TextField(
-            label="分辨率 (宽,高)",
-            value=self.settings_manager.get("default_resolution"),
-            width=150
-        )
-
-        self.batch_size_input = ft.TextField(
-            label="批次大小",
-            value=self.settings_manager.get("default_batch_size"),
-            width=100
-        )
-
-        self.num_repeats_input = ft.TextField(
-            label="重复次数",
-            value="10",
-            width=100
-        )
-
-        self.max_epochs_input = ft.TextField(
-            label="最大轮数",
-            value=self.settings_manager.get("default_epochs"),
-            width=100
-        )
-
-        self.learning_rate_input = ft.TextField(
-            label="学习率",
-            value=self.settings_manager.get("default_lr"),
-            width=150
-        )
-
-        self.lora_name_input = ft.TextField(
-            label="模型名称",
-            value="my_lora",
-            width=200
-        )
-
-        self.sample_prompts_input = ft.TextField(
-            label="采样提示词",
-            value="a beautiful landscape",
-            multiline=True,
-            min_lines=3,
-            max_lines=5
-        )
-
-        # 控制按钮
-        start_training_btn = ft.ElevatedButton(
-            text="🚀 开始训练",
-            icon=ft.Icons.PLAY_ARROW,
-            on_click=self.start_training
-        )
-
-        stop_training_btn = ft.ElevatedButton(
-            text="⏹️ 停止训练",
-            icon=ft.Icons.STOP,
-            on_click=self.stop_training
-        )
-
-        generate_script_btn = ft.ElevatedButton(
-            text="📝 生成脚本",
-            icon=ft.Icons.CODE,
-            on_click=self.generate_training_script
-        )
-
-        # 输出显示
-        self.training_output = ft.TextField(
-            label="训练输出",
-            multiline=True,
-            min_lines=15,
-            max_lines=20,
-            read_only=True,
-            expand=True
-        )
-
-        # TensorBoard
-        self.tensorboard_container = ft.Container(
-            content=ft.Text("TensorBoard将在训练开始后显示"),
-            height=400,
-            border=ft.border.all(1, ft.Colors.GREY_300),
-            border_radius=ft.border_radius.all(10)
-        )
-
-        # 组装训练视图
-        training_view = ft.Column([
-            ft.Container(
-                content=ft.Text("🚀 模型训练", size=24, weight=ft.FontWeight.BOLD),
-                padding=ft.padding.all(20)
-            ),
-            ft.Container(
-                content=ft.Column([
-                    # 数据集配置
-                    ft.Text("数据集配置", size=16, weight=ft.FontWeight.BOLD),
-                    self.dataset_path_input,
-                    ft.Row([
-                        ft.Text("数据集类型:", weight=ft.FontWeight.BOLD),
-                        self.dataset_type_radio
-                    ]),
-
-                    # 训练参数
-                    ft.Text("训练参数", size=16, weight=ft.FontWeight.BOLD),
-                    ft.Row([
-                        self.resolution_input,
-                        self.batch_size_input,
-                        self.num_repeats_input,
-                        self.max_epochs_input
-                    ]),
-                    ft.Row([
-                        self.learning_rate_input,
-                        self.lora_name_input
-                    ]),
-                    self.sample_prompts_input,
-
-                    # 控制按钮
-                    ft.Row([
-                        start_training_btn,
-                        stop_training_btn,
-                        generate_script_btn
-                    ])
-                ]),
-                padding=ft.padding.all(20)
-            ),
-            # 输出区域
-            ft.Container(
-                content=ft.Row([
-                    ft.Container(
-                        content=self.training_output,
-                        expand=2
-                    ),
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text("TensorBoard", weight=ft.FontWeight.BOLD),
-                            self.tensorboard_container
-                        ]),
-                        expand=1
-                    )
-                ], expand=True),
-                expand=True,
-                padding=ft.padding.symmetric(horizontal=20, vertical=10)
+            cfg = TrainingConfig(
+                backend=TrainingBackend.MUSUBI_QWEN_IMAGE,
+                name=f"QwenImage-{time.strftime('%H%M%S')}",
+                dataset_id=ds.dataset_id,
+                dataset_size=ds_size,
+                repeats=1,
+                epochs=1,
+                batch_size=2,
+                grad_accum=1,
+                resolution="1024,1024",
+                base_model="",  # 先留空
+                gpu_index=0,
+                sample_prompt="a cute cat",
+                sample_every_n_steps=100,
             )
-        ], scroll=ft.ScrollMode.AUTO, expand=True)
+            jid = self.training_manager.run_training(cfg)
 
-        self.main_content.content = training_view
+            # 仅缓存详情视图（后续点进来再用），当前仍停在列表页
+            def _on_cancel():
+                self.training_manager.cancel(jid)  # 回调不返回值
+
+            def _on_back():
+                # 统一你项目里的返回样式：回到训练列表页
+                self.show_training_view()
+
+            detail = TrainingDetailView(
+                task_id=jid,
+                cfg=cfg.__dict__,
+                on_cancel=_on_cancel,
+                on_back=_on_back,  # 关键：提供返回回调
+            )
+            self.current_training_detail[jid] = detail
+
+            # 更新列表 & 提示，但不跳转
+            self.training_list.upsert_task(
+                jid,
+                name=cfg.name,
+                state="PENDING",
+                progress=0.0,
+                eta=""
+            )
+            self.toast("✅ 已创建训练任务，正在排队/启动…")
+            self.content_host.content = self.training_list
+            self.page.update()
+
+        def open_task(task_id: str):
+            detail = self.current_training_detail.get(task_id)
+            if detail is None:
+                # 兜底：没有缓存时临时构建一个（从任务管理器或默认cfg恢复）
+                cfg_dict = {}
+
+                def _on_cancel():
+                    self.training_manager.cancel(task_id)
+
+                def _on_back():
+                    self.show_training_view()
+
+                detail = TrainingDetailView(
+                    task_id=task_id,
+                    cfg=cfg_dict,
+                    on_cancel=_on_cancel,
+                    on_back=_on_back,  # 统一你的返回样式
+                )
+                self.current_training_detail[task_id] = detail
+
+            self.content_host.content = detail
+            self.page.update()
+
+        self.training_list = TrainingListView(on_create_task=create_task, on_open_task=open_task)
+
+        # 订阅事件以刷新列表 & 详情
+        def on_state(ev):
+            tid = ev["id"]
+            st = ev["state"]
+            if tid in self.current_training_detail:
+                self.current_training_detail[tid].update_state(st)
+            # 简化：进度由 progress 事件再更新
+            self.training_list.upsert_task(tid, name=self.current_training_detail.get(tid, {"cfg": {}}).cfg.get("name",
+                                                                                                                "Task") if tid in self.current_training_detail else ev.get(
+                "name", "Task"), state=st)
+
+        def on_log(ev):
+            tid, line = ev["id"], ev["line"]
+            if tid in self.current_training_detail:
+                self.current_training_detail[tid].append_log(line)
+
+        def on_prog(ev):
+            tid = ev["id"]
+            step = ev.get("step", 0)
+            total = ev.get("total_steps", 1)
+            eta = ev.get("eta_secs")
+            ips = ev.get("ips")
+            if tid in self.current_training_detail:
+                self.current_training_detail[tid].update_progress(step, total, ips, eta)
+            # 列表进度条
+            self.training_list.upsert_task(tid, name=self.current_training_detail.get(tid, {"cfg": {}}).cfg.get("name",
+                                                                                                                "Task") if tid in self.current_training_detail else "Task",
+                                           state="RUNNING", progress=(step / total if total else 0.0),
+                                           eta=self.current_training_detail[tid]._fmt_eta(
+                                               eta) if tid in self.current_training_detail else "")
+
+        self.bus.on("task_state", on_state)
+        self.bus.on("task_log", on_log)
+        self.bus.on("task_progress", on_prog)
+
+        # 显示列表
+        self.content_host.content = self.training_list
         self.page.update()
 
     def show_settings_view(self):
@@ -1019,7 +844,7 @@ class ImageLabelingApp:
             )
         ], scroll=ft.ScrollMode.AUTO)
 
-        self.main_content.content = settings_view
+        self.content_host.content = settings_view
         self.page.update()
 
     def show_terminal_view(self):
@@ -1129,77 +954,11 @@ class ImageLabelingApp:
             )
         ], expand=True)
 
-        self.main_content.content = terminal_view
+        self.content_host.content = terminal_view
         self.page.update()
 
         self.terminal_service.log_info("终端视图已打开")
 
-
-    # 训练相关方法
-    def start_training(self, e):
-        """开始训练"""
-        from training_manager import TrainingConfig
-
-        config = TrainingConfig(
-            dataset_path=self.dataset_path_input.value,
-            dataset_type=self.dataset_type_radio.value,
-            resolution=self.resolution_input.value,
-            batch_size=self.batch_size_input.value,
-            num_repeats=self.num_repeats_input.value,
-            max_epochs=self.max_epochs_input.value,
-            learning_rate=self.learning_rate_input.value,
-            lora_name=self.lora_name_input.value,
-            sample_prompts=self.sample_prompts_input.value
-        )
-
-        def progress_callback(message):
-            self.page.add_action(lambda: (
-                setattr(self.training_output, "value", self.training_output.value + message + "\n"),
-                self.page.update()
-            ))
-
-        def training_task():
-            tb_port = self.training_manager.run_training(config, progress_callback)
-            if tb_port > 0:
-                self.page.add_action(lambda: (
-                    setattr(self.tensorboard_container, "content",
-                            ft.Text(f"TensorBoard: http://localhost:{tb_port}")),
-                    self.page.update()
-                ))
-
-        threading.Thread(target=training_task, daemon=True).start()
-
-    def stop_training(self, e):
-        """停止训练"""
-        result = self.training_manager.stop_training()
-        self.training_output.value += f"\n{result}\n"
-        self.tensorboard_container.content = ft.Text("TensorBoard已停止")
-        self.page.update()
-
-    def generate_training_script(self, e):
-        """生成训练脚本"""
-        from training_manager import TrainingConfig
-
-        try:
-            config = TrainingConfig(
-                dataset_path=self.dataset_path_input.value,
-                dataset_type=self.dataset_type_radio.value,
-                resolution=self.resolution_input.value,
-                batch_size=self.batch_size_input.value,
-                num_repeats=self.num_repeats_input.value,
-                max_epochs=self.max_epochs_input.value,
-                learning_rate=self.learning_rate_input.value,
-                lora_name=self.lora_name_input.value,
-                sample_prompts=self.sample_prompts_input.value
-            )
-
-            script_path = self.training_manager.generate_training_script(config)
-            self.training_output.value += f"\n脚本已生成: {script_path}\n"
-            self.page.update()
-
-        except Exception as ex:
-            self.training_output.value += f"\n生成脚本失败: {str(ex)}\n"
-            self.page.update()
 
     def save_settings(self, e):
         """保存设置"""
@@ -1213,10 +972,9 @@ class ImageLabelingApp:
         self.page.update()
 
 
-
 def main(page: ft.Page):
     """主函数"""
-    app = ImageLabelingApp(page)
+    _app = ImageLabelingApp(page)
 
 
 if __name__ == "__main__":

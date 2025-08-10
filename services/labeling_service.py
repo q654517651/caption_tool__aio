@@ -6,7 +6,7 @@ import threading
 from typing import List, Tuple, Callable, Optional
 from pathlib import Path
 from datetime import datetime
-from chat_tool import AIChatTool
+from services.chat_service import AIChatTool
 
 
 # from terminal_service import log_info, log_error, log_progress
@@ -79,7 +79,7 @@ class LabelingService:
         """
         try:
             # 只标注未标注的图片
-            unlabeled_images = [img for img in images if not labels.get(img, "").strip()]
+            unlabeled_images = [img for img in images if not labels.get(os.path.basename(img), "").strip()]
 
             if not unlabeled_images:
                 self.terminal_service.log_info("所有图片都已标注")
@@ -102,7 +102,7 @@ class LabelingService:
                     )
 
                     if label_text and not label_text.startswith("错误"):
-                        labels[img_path] = label_text
+                        labels[img_name] = label_text
                         success_count += 1
 
                         # 保存到文件

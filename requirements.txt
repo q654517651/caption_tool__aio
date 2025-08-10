@@ -3,3 +3,4 @@ pandas
 Pillow
 openai
 requests
+flet

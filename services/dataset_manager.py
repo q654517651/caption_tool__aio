@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Literal
 from datetime import datetime
 import uuid
-from terminal_service import log_info, log_error, log_success, log_progress
+from services.terminal_service import log_info, log_error, log_success
 from PIL import Image
 import threading
 
@@ -93,6 +93,7 @@ class DatasetManager:
     """数据集管理器"""
     def __init__(self, datasets_dir: str = "datasets"):
         # 统一工作根（可从设置注入）
+        self.platform_mode = "pc"
         self.workspace_root = os.path.abspath("./workspace")
         self.medium_max_side = 1280
         self.web_strategy = "assets"
@@ -488,6 +489,37 @@ class DatasetManager:
             return rel  # 🔥 不要加 "assets/" 前缀
         return None
 
+    def resolve_image_src(
+            self,
+            dataset_id: str,
+            filename: str,
+            kind: Literal["images", "medium"] = "medium",
+            platform: Optional[str] = None,
+            *,
+            prefer: Literal["auto", "abs", "url"] = "auto",
+    ) -> dict:
+        """
+        统一解析图片资源。
+        返回: {"src": str, "abs": str, "mode": "abs"|"url"}
+        - platform: "web" | "pc"；不传则用 self.platform_mode
+        - prefer:  "auto"（pc→abs, web→url）, "abs"（绝对路径）, "url"（相对assets路径）
+        """
+        import os
+        plat = (platform or getattr(self, "platform_mode", "pc")).lower()
+
+        # 生成/获取中清路径（或回退原图）
+        abs_path = self.ensure_medium(dataset_id, filename) if kind == "medium" \
+            else os.path.join(self.get_images_dir(dataset_id), filename)
+        abs_path = os.path.abspath(abs_path)
+
+        if prefer == "abs" or (prefer == "auto" and plat != "web"):
+            # PC：绝对路径（你验证过最稳）
+            return {"src": abs_path, "abs": abs_path, "mode": "abs"}
+
+        # Web：相对 assets_dir 的路径（相对 workspace_root）
+        rel = self.url_for(dataset_id, filename, kind=kind)
+        # url_for 返回相对 workspace 的路径，如: datasets/<id>/medium/xxx.jpg
+        return {"src": rel, "abs": abs_path, "mode": "url"}
 
 
 
