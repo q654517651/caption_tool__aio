@@ -7,7 +7,6 @@ import time
 import asyncio
 from typing import cast, Optional
 
-
 # 导入服务模块
 from services.labeling_service import LabelingService
 # from translation_service import TranslationService
@@ -21,10 +20,11 @@ from views.dialogs import ToastService
 from services.event_bus import EventBus
 from services.job_queue import JobQueue
 from training_manager import TrainingManager
-from trainers.types import TrainingConfig, TrainingBackend
+from trainers.types import TrainingConfig, TrainingBackend, BACKEND_PRESETS
 from views.training_list_view import TrainingListView
 from views.training_detail_view import TrainingDetailView
 from services.navigation import NavigationService
+
 
 # 路由常量
 PATH_HOME = "/"
@@ -33,11 +33,30 @@ PATH_TRAINING = "/training"
 PATH_TERMINAL = "/terminal"
 PATH_SETTINGS = "/settings"
 
+
 class ImageLabelingApp:
     """主应用类"""
 
     def __init__(self, page: ft.Page):
+        # ========= 基础页面配置 =========
+        self.page = page
+        self.page.title = "图像打标系统"
+        self.page.theme_mode = ft.ThemeMode.LIGHT
+        self.page.window_width = 1400
+        self.page.window_height = 900
+
+        # ========= UI 容器与页面状态 =========
+        # 所有内容统一挂到 content_host；不要再使用 main_content
+        self.content_host = ft.Container(expand=True)
+
+        # 这些控件/引用在后续 view 构建时会被赋值，这里先置空占位
         self.nav_rail = None
+        self._datasets_view = None
+        self._dataset_detail_view = None
+        self.current_dataset_id = None
+
+        # 训练视图内使用到的输入控件（按你原来地占位保留）
+        self.current_view = None
         self.terminal_display = None
         self.settings_status = None
         self.unet_path_input = None
@@ -56,49 +75,42 @@ class ImageLabelingApp:
         self.resolution_input = None
         self.dataset_type_radio = None
         self.dataset_path_input = None
-        self._datasets_view = None
-        self._dataset_detail_view = None
-        self.current_dataset_id = None
-        self.main_content = None
+        self.training_list = None
 
-        self.content_host = ft.Container(expand=True)  # 中心内容区域
-
-        self.page = page
-
-        # 初始化服务模块
-        self.nav = NavigationService(self.page, render_fn=self._render_route)
-        self.terminal_service = TerminalService()
-        self.settings_manager = SettingsManager()
-        self.dataset_manager = DatasetManager()
-        self.labeling_service = LabelingService(self.terminal_service)
+        # ========= 服务模块 =========
+        # 提示/Toast
         self.toast_service = ToastService(self.page)
         self.toast = lambda msg, kind="info", duration=2000: \
             self.toast_service.show(msg, kind=kind, duration=duration)
 
+        # 路由导航（由 NavigationService 回调 _render_route 统一渲染）
+        self.nav = NavigationService(self.page, render_fn=self._render_route)
+
+        # 设置 / 数据集 / 打标服务
+        self.settings_manager = SettingsManager()
+        self.dataset_manager = DatasetManager()
         self.dataset_manager.platform_mode = "web" if getattr(self.page, "platform", None) == "web" else "pc"
+        self.terminal_service = TerminalService()
+        self.labeling_service = LabelingService(self.terminal_service)
 
-        # 训练事件与队列（先单并发，后面再按GPU做限流）
+        # ========= 训练调度（事件总线、队列、管理器）=========
         self.bus = EventBus()
-        self.queue = JobQueue(self.bus, max_workers=1)
+        self.queue = JobQueue(self.bus, max_workers=1)  # 先单并发，后续可按 GPU 扩展
         self.training_manager = TrainingManager(self.bus, self.queue)
-        self.current_training_detail = {}
+        self.current_training_detail = {}  # task_id -> TrainingDetailView
 
-        self.current_view = "data"  # 当前视图
+        # 打标刷新任务控制（若你在别处用到）
+        self._labeling_refresh_stop = None
+        self._labeling_refresh_task = None
 
-        # 配置页面
-        self.page.title = "图像打标系统"
-        self.page.theme_mode = ft.ThemeMode.LIGHT
-        self.page.window_width = 1400
-        self.page.window_height = 900
-
+        # ========= 文件选择器 & Overlay =========
         self.file_picker = ft.FilePicker()
         self.page.overlay.append(self.file_picker)
 
-        self._labeling_refresh_stop = None
-        self._labeling_refresh_task = None  # 新增：控制“打标实时刷新”的停止信号
+        # 初次更新（让 AppBar / Overlay 等生效）
         self.page.update()
 
-        # 创建UI
+        # ========= 启动 UI =========
         self.setup_ui()
 
     def setup_ui(self):
@@ -181,7 +193,7 @@ class ImageLabelingApp:
         if route == PATH_TRAINING:
             # 训练任务列表
             # 复用已实例。如果第一次进入，这里构建一次
-            if not hasattr(self, "training_list"):
+            if not getattr(self, "training_list", None):
                 self.show_training_view()  # 内部会创建 self.training_list
             else:
                 self.content_host.content = self.training_list
@@ -274,11 +286,6 @@ class ImageLabelingApp:
                         self._dataset_detail_view.refresh_images()
             else:
                 self.terminal_service.log_error(message)
-
-    # def toast(self, message: str):  # 可放到你的主类里，方便到处复用
-    #     self.page.snack_bar = ft.SnackBar(ft.Text(message))
-    #     self.page.snack_bar.open = True
-    #     self.page.update()
 
     def view_dataset(self, dataset_id: str):
         ds = self.dataset_manager.get_dataset(dataset_id)
@@ -660,9 +667,11 @@ class ImageLabelingApp:
         self._datasets_view.refresh()
 
     def show_training_view(self):
+
         # 列表视图
         def create_task():
-            # 根据你的数据集管理器拿到默认数据集（这里示例拿第一个；你也可以用当前选择的）
+            import time
+            # 1) 选数据集
             datasets = self.dataset_manager.list_datasets()
             if not datasets:
                 self.toast("没有数据集，先去创建一个", "warning")
@@ -670,48 +679,96 @@ class ImageLabelingApp:
             ds = datasets[0]
             ds_size = len(ds.images)
 
-            cfg = TrainingConfig(
-                backend=TrainingBackend.MUSUBI_QWEN_IMAGE,
-                name=f"QwenImage-{time.strftime('%H%M%S')}",
-                dataset_id=ds.dataset_id,
-                dataset_size=ds_size,
-                repeats=1,
-                epochs=1,
-                batch_size=2,
-                grad_accum=1,
-                resolution="1024,1024",
-                base_model="",  # 先留空
-                gpu_index=0,
-                sample_prompt="a cute cat",
-                sample_every_n_steps=100,
-            )
-            jid = self.training_manager.run_training(cfg)
+            # 2) 合并预设（可选）
+            try:
+                PRESETS = BACKEND_PRESETS
+            except Exception:
+                PRESETS = {}
 
-            # 仅缓存详情视图（后续点进来再用），当前仍停在列表页
-            def _on_cancel():
-                self.training_manager.cancel(jid)  # 回调不返回值
+            backend = TrainingBackend.MUSUBI_QWEN_IMAGE
+            temp_id = f"QwenImage-{time.strftime('%H%M%S')}"  # 用 name 作为临时ID
+            base_cfg = {
+                "backend": backend,
+                "name": temp_id,
+                "dataset_id": ds.dataset_id,
+                "dataset_size": ds_size,
+                "repeats": 1,
+                "epochs": 1,
+                "batch_size": 2,
+                "grad_accum": 1,
+                "resolution": "1024,1024",
+                "base_model": "",
+                "gpu_index": 0,
+                "sample_prompt": "a cute cat",
+                "sample_every_n_steps": 200,
+            }
+            base_cfg.update(PRESETS.get(backend, {}))
+            cfg = TrainingConfig(**base_cfg)
 
+            # 3) 回调（返回/停止）
             def _on_back():
-                # 统一你项目里的返回样式：回到训练列表页
-                self.show_training_view()
+                self.content_host.content = self.training_list
+                self.page.update()
 
+            def _on_cancel():
+                self.toast("已取消（未启动）", "warning")
+
+            # 4) 先创建详情视图，再定义 _on_start，把当前 detail 闭包进去
+            from views.training_detail_view import TrainingDetailView
             detail = TrainingDetailView(
-                task_id=jid,
+                task_id=temp_id,
                 cfg=cfg.__dict__,
                 on_cancel=_on_cancel,
-                on_back=_on_back,  # 关键：提供返回回调
+                on_back=_on_back,
+                on_start=None,  # 先占位，下面再赋值
             )
-            self.current_training_detail[jid] = detail
 
-            # 更新列表 & 提示，但不跳转
-            self.training_list.upsert_task(
-                jid,
-                name=cfg.name,
-                state="PENDING",
-                progress=0.0,
-                eta=""
-            )
-            self.toast("✅ 已创建训练任务，正在排队/启动…")
+            def _on_start(updated_cfg: dict, view=detail):
+                """手动开始训练：使用当前详情视图实例，不从 dict 里找，避免 None"""
+                real_jid = self.training_manager.run_training(TrainingConfig(**updated_cfg))
+
+                # 列表：移除临时ID，插入真实ID
+                if hasattr(self.training_list, "remove_task"):
+                    try:
+                        self.training_list.remove_task(view.task_id)
+                    except Exception:
+                        pass
+                if hasattr(self.training_list, "upsert_task"):
+                    self.training_list.upsert_task(
+                        real_jid,
+                        name=updated_cfg.get("name", real_jid),
+                        state="RUNNING",
+                        progress=0.0,
+                        eta=""
+                    )
+
+                # 详情缓存映射：临时ID -> 真实ID
+                old_id = view.task_id
+                self.current_training_detail.pop(old_id, None)
+                view.task_id = real_jid
+                try:
+                    view.title.value = f"任务：{updated_cfg.get('name', real_jid)}"
+                    view.state.value = "状态：RUNNING"
+                    view.update()
+                except Exception:
+                    pass
+                self.current_training_detail[real_jid] = view
+
+                self.toast(f"任务已启动：{real_jid}")
+
+            # 把真正的 on_start 填回去
+            detail.on_start = _on_start
+
+            # 5) 缓存详情并更新列表为 PENDING（不自动跳详情）
+            self.current_training_detail[temp_id] = detail
+            if hasattr(self.training_list, "upsert_task"):
+                self.training_list.upsert_task(
+                    temp_id,
+                    name=cfg.name,
+                    state="PENDING",
+                    progress=0.0,
+                    eta=""
+                )
             self.content_host.content = self.training_list
             self.page.update()
 
@@ -725,7 +782,9 @@ class ImageLabelingApp:
                     self.training_manager.cancel(task_id)
 
                 def _on_back():
-                    self.show_training_view()
+                    # 不要重建，直接切回已有的列表实例
+                    self.content_host.content = self.training_list
+                    self.page.update()
 
                 detail = TrainingDetailView(
                     task_id=task_id,
@@ -958,7 +1017,6 @@ class ImageLabelingApp:
         self.page.update()
 
         self.terminal_service.log_info("终端视图已打开")
-
 
     def save_settings(self, e):
         """保存设置"""
