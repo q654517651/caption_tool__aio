@@ -1,0 +1,175 @@
+[project]
+name = "tagtragger"
+version = "1.0.0"
+description = "TagTracker - 集成打标与LoRA训练工具"
+readme = "README.md"
+requires-python = ">=3.10, <3.13"
+authors = [
+    { name = "TagTracker Team" }
+]
+license = { text = "MIT" }
+keywords = ["AI", "ML", "LoRA", "Training", "Image", "Video"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # TagTracker 核心依赖
+    "pandas>=2.0.0",
+    "Pillow>=10.2.0",
+    "openai>=1.0.0",
+    "requests>=2.28.0",
+    "flet>=0.28.0",
+    
+    # Musubi-Tuner 训练器依赖
+    "accelerate==1.6.0",
+    "av==14.0.1", 
+    "bitsandbytes==0.45.4",
+    "diffusers==0.32.1",
+    "einops==0.7.0",
+    "huggingface-hub==0.34.3",
+    "opencv-python==4.10.0.84",
+    "safetensors==0.4.5",
+    "toml==0.10.2",
+    "tqdm==4.67.1",
+    "transformers==4.54.1",
+    "voluptuous==0.15.2",
+    
+    # Wan2.1 支持
+    "ftfy==6.3.1",
+    "easydict==1.13",
+    
+    # FLUX.1 Kontext 支持
+    "sentencepiece==0.2.0",
+]
+
+[project.optional-dependencies]
+# PyTorch CUDA 124 支持
+cu124 = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+]
+
+# PyTorch CUDA 128 支持  
+cu128 = [
+    "torch>=2.7.1",
+    "torchvision>=0.22.1",
+]
+
+# CPU 版本
+cpu = [
+    "torch>=2.5.1",
+    "torchvision>=0.20.1",
+]
+
+# 完整开发环境
+dev = [
+    "ascii-magic==2.3.0",
+    "matplotlib==3.10.0", 
+    "tensorboard>=2.14.0",
+    "prompt-toolkit==3.0.51",
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.5.0",
+]
+
+# 仅调试工具
+debug = [
+    "ascii-magic==2.3.0",
+    "matplotlib==3.10.0",
+    "tensorboard>=2.14.0", 
+]
+
+# 高级功能
+advanced = [
+    # "sageattention>=1.0.6",  # 暂时注释，等稳定版本
+]
+
+[project.urls]
+Homepage = "https://github.com/your-repo/tagtragger"
+Documentation = "https://github.com/your-repo/tagtragger#readme"
+Repository = "https://github.com/your-repo/tagtragger.git"
+Issues = "https://github.com/your-repo/tagtragger/issues"
+
+[project.scripts]
+tagtragger = "tagtragger.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# UV 包管理器配置
+[tool.uv]
+# CUDA 版本冲突管理
+conflicts = [
+    [
+        { extra = "cu124" },
+        { extra = "cu128" }, 
+        { extra = "cpu" },
+    ],
+]
+
+# PyTorch 索引配置
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", extra = "cu124" },
+    { index = "pytorch-cu128", extra = "cu128" },
+]
+torchvision = [
+    { index = "pytorch-cu124", extra = "cu124" },
+    { index = "pytorch-cu128", extra = "cu128" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128" 
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# 代码格式化配置
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # 排除第三方代码
+  third_party/
+  | workspace/
+  | \.git/
+)/
+'''
+
+# 导入排序配置
+[tool.isort]
+profile = "black"
+line_length = 88
+skip_glob = ["third_party/*", "workspace/*"]
+
+# 类型检查配置
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+exclude = [
+    '^third_party/',
+    '^workspace/',
+]
+
+# pytest 配置
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-v --tb=short"

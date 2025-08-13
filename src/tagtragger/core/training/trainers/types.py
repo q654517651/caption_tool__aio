@@ -15,7 +15,6 @@ class TrainingConfig:
     name: str
     dataset_id: str
     dataset_size: int
-    task_id: str = ""  # 添加任务ID字段
     repeats: int = 1
     epochs: int = 1
     batch_size: int = 1

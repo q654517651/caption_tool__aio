@@ -395,13 +395,19 @@ class DatasetManager:
 
     # ---- 路径基础 ----
     def get_dataset_path(self, dataset_id: str) -> str:
-        return os.path.join(self.workspace_root, "datasets", dataset_id)
+        result = os.path.join(self.workspace_root, "datasets", dataset_id)
+        print(f"[DEBUG] get_dataset_path: dataset_id={dataset_id}, result={result}")
+        return result
 
     def get_images_dir(self, dataset_id: str) -> str:
-        return os.path.join(self.get_dataset_path(dataset_id), "images")
+        result = os.path.join(self.get_dataset_path(dataset_id), "images")
+        print(f"[DEBUG] get_images_dir: dataset_id={dataset_id}, result={result}")
+        return result
 
     def get_medium_dir(self, dataset_id: str) -> str:
-        return os.path.join(self.get_dataset_path(dataset_id), "medium")
+        result = os.path.join(self.get_dataset_path(dataset_id), "medium")
+        print(f"[DEBUG] get_medium_dir: dataset_id={dataset_id}, result={result}")
+        return result
 
     def list_images(self, dataset_id: str) -> list[str]:
         """仅返回 images/ 下的文件名（不含路径）"""
@@ -426,10 +432,13 @@ class DatasetManager:
         - 若 > 阈值：在 medium/ 下生成 JPEG（最长边=阈值），并返回其路径
         """
         src = os.path.join(self.get_images_dir(dataset_id), filename)
+        print(f"[DEBUG] ensure_medium: dataset_id={dataset_id}, filename={filename}")
+        print(f"[DEBUG] ensure_medium: src={src}, exists={os.path.exists(src)}")
         if not os.path.exists(src):
             return src  # 让上层自己处理不存在
 
         if not self._need_medium(src):
+            print(f"[DEBUG] ensure_medium: image doesn't need medium, returning src")
             return src  # 小图直接用原图作为中图
 
         os.makedirs(self.get_medium_dir(dataset_id), exist_ok=True)
@@ -437,6 +446,7 @@ class DatasetManager:
         # 用 mtime 做版本号，源图更新会换文件名
         mtime = int(os.path.getmtime(src))
         medium_path = os.path.join(self.get_medium_dir(dataset_id), f"{name}.{mtime}.jpg")
+        print(f"[DEBUG] ensure_medium: medium_path={medium_path}, exists={os.path.exists(medium_path)}")
 
         # 清理旧版本
         prefix = f"{name}."
@@ -449,6 +459,7 @@ class DatasetManager:
 
         # 生成（若不存在）
         if not os.path.exists(medium_path):
+            print(f"[DEBUG] ensure_medium: generating medium image")
             with Image.open(src) as im:
                 im.thumbnail((self.medium_max_side, self.medium_max_side), Image.Resampling.LANCZOS)
                 if im.mode != "RGB":
@@ -511,14 +522,30 @@ class DatasetManager:
         abs_path = self.ensure_medium(dataset_id, filename) if kind == "medium" \
             else os.path.join(self.get_images_dir(dataset_id), filename)
         abs_path = os.path.abspath(abs_path)
+        
+        # 添加调试信息
+        print(f"[DEBUG] resolve_image_src: dataset_id={dataset_id}, filename={filename}, kind={kind}")
+        print(f"[DEBUG] resolve_image_src: initial abs_path={abs_path}, exists={os.path.exists(abs_path)}")
+        
+        # 检查文件是否存在
+        if not os.path.exists(abs_path):
+            # 如果请求的文件不存在，尝试使用原图
+            abs_path = os.path.join(self.get_images_dir(dataset_id), filename)
+            abs_path = os.path.abspath(abs_path)
+            print(f"[DEBUG] resolve_image_src: fallback to original abs_path={abs_path}, exists={os.path.exists(abs_path)}")
+            if not os.path.exists(abs_path):
+                print(f"[DEBUG] resolve_image_src: file not found, returning empty paths")
+                return {"src": "", "abs": "", "mode": "abs"}
 
         if prefer == "abs" or (prefer == "auto" and plat != "web"):
             # PC：绝对路径（你验证过最稳）
+            print(f"[DEBUG] resolve_image_src: returning absolute path={abs_path}")
             return {"src": abs_path, "abs": abs_path, "mode": "abs"}
 
         # Web：相对 assets_dir 的路径（相对 workspace_root）
         rel = self.url_for(dataset_id, filename, kind=kind)
         # url_for 返回相对 workspace 的路径，如: datasets/<id>/medium/xxx.jpg
+        print(f"[DEBUG] resolve_image_src: returning relative path, rel={rel}, abs={abs_path}")
         return {"src": rel, "abs": abs_path, "mode": "url"}
 
 
