@@ -1,219 +1,192 @@
 """
-Musubi-Tuner 集成助手工具
+Musubi-Tuner 工具函数
+使用内嵌的git子模块，无需额外配置
 """
 
-import os
 import subprocess
-import shutil
 from pathlib import Path
-from typing import Tuple, Optional, List
-
-from ..config import get_config, update_config
-from .logger import log_info, log_error, log_success, log_warning
+from typing import Dict, Any
+from ..utils.logger import log_info, log_error, log_success
 
 
-class MusubiHelper:
-    """Musubi-Tuner 集成助手"""
-    
-    @staticmethod
-    def check_installation() -> Tuple[bool, str, List[str]]:
-        """
-        检查 Musubi-Tuner 安装状态
-        
-        Returns:
-            (是否安装, 状态信息, 缺失组件列表)
-        """
-        missing_components = []
-        
-        # 检查内置的 Musubi-Tuner 子模块
-        project_root = Path(__file__).parent.parent.parent.parent
-        musubi_dir = project_root / "third_party" / "musubi-tuner"
+def get_musubi_path() -> str:
+    """获取内嵌的musubi-tuner路径"""
+    project_root = Path(__file__).parent.parent.parent.parent
+    return str(project_root / "third_party" / "musubi-tuner")
+
+
+def check_musubi_status() -> Dict[str, Any]:
+    """检查内嵌musubi-tuner状态"""
+    try:
+        musubi_dir = Path(get_musubi_path())
         
         if not musubi_dir.exists():
-            missing_components.append("Musubi-Tuner 子模块未初始化，请运行: git submodule update --init --recursive")
-        else:
-            # 检查关键文件
-            required_files = [
-                "src/musubi_tuner/hv_train_network.py",
-                "src/musubi_tuner/qwen_image_train_network.py",
-                "pyproject.toml"
-            ]
-            
-            for file_path in required_files:
-                if not (musubi_dir / file_path).exists():
-                    missing_components.append(f"缺少文件: {file_path}")
+            return {
+                "available": False,
+                "status": "Git子模块未初始化，请运行: git submodule update --init --recursive"
+            }
         
-        # 检查 accelerate 命令
-        if not shutil.which("accelerate"):
-            missing_components.append("accelerate 命令不可用 (需要安装: pip install accelerate)")
-        
-        # 检查 Python 版本
-        import sys
-        if sys.version_info < (3, 10):
-            missing_components.append(f"Python 版本过低 ({sys.version}) - Musubi 需要 Python 3.10+")
-        
-        # 检查 PyTorch
-        try:
-            import torch
-            if torch.__version__ < "2.5.0":
-                missing_components.append(f"PyTorch 版本过低 ({torch.__version__}) - Musubi 需要 2.5.0+")
-        except ImportError:
-            missing_components.append("PyTorch 未安装")
-        
-        is_available = len(missing_components) == 0
-        status = "Musubi-Tuner 可用" if is_available else f"发现 {len(missing_components)} 个问题"
-        
-        return is_available, status, missing_components
-    
-    @staticmethod
-    def setup_musubi_path(musubi_path: str) -> Tuple[bool, str]:
-        """
-        设置 Musubi-Tuner 路径
-        
-        Args:
-            musubi_path: Musubi-Tuner 安装路径
-            
-        Returns:
-            (成功状态, 状态消息)
-        """
-        try:
-            musubi_dir = Path(musubi_path).resolve()
-            
-            # 验证路径
-            if not musubi_dir.exists():
-                return False, f"路径不存在: {musubi_dir}"
-            
-            # 验证是否为 Musubi 项目
-            if not (musubi_dir / "src" / "musubi_tuner").exists():
-                return False, "不是有效的 Musubi-Tuner 项目目录"
-            
-            # 更新配置
-            update_config(model_paths={'musubi_dir': str(musubi_dir)})
-            
-            log_success(f"Musubi-Tuner 路径已设置: {musubi_dir}")
-            return True, "路径设置成功"
-            
-        except Exception as e:
-            log_error(f"设置 Musubi 路径失败: {e}")
-            return False, f"设置失败: {e}"
-    
-    @staticmethod
-    def get_installation_guide() -> str:
-        """获取安装指南"""
-        return """
-# Musubi-Tuner 安装指南
-
-## 1. 克隆项目
-```bash
-git clone https://github.com/kohya-ss/musubi-tuner.git
-cd musubi-tuner
-```
-
-## 2. 创建虚拟环境 (推荐)
-```bash
-python -m venv musubi_env
-# Windows
-musubi_env\\Scripts\\activate
-# Linux/Mac  
-source musubi_env/bin/activate
-```
-
-## 3. 安装依赖
-```bash
-pip install -e .
-pip install accelerate
-```
-
-## 4. 在 TagTracker 中配置路径
-在设置页面中将 "Musubi-Tuner目录" 设置为克隆的项目路径。
-
-## 5. 验证安装
-使用 TagTracker 的检查功能验证安装是否成功。
-"""
-    
-    @staticmethod
-    def test_training_command() -> Tuple[bool, str]:
-        """
-        测试训练命令是否可用
-        
-        Returns:
-            (测试成功, 测试结果信息)
-        """
-        try:
-            config = get_config()
-            musubi_dir = Path(config.model_paths.musubi_dir)
-            
-            if not musubi_dir.exists():
-                return False, "Musubi-Tuner 目录未配置"
-            
-            script_path = musubi_dir / "src/musubi_tuner/hv_train_network.py"
-            if not script_path.exists():
-                return False, f"训练脚本不存在: {script_path}"
-            
-            # 测试 accelerate 命令
-            result = subprocess.run(
-                ["accelerate", "launch", str(script_path), "--help"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                return True, "训练命令测试成功"
-            else:
-                return False, f"训练命令测试失败: {result.stderr}"
-                
-        except subprocess.TimeoutExpired:
-            return False, "命令执行超时"
-        except Exception as e:
-            return False, f"测试失败: {e}"
-    
-    @staticmethod
-    def get_available_backends() -> List[str]:
-        """获取可用的训练后端"""
-        available = []
-        
-        is_available, _, _ = MusubiHelper.check_installation()
-        if is_available:
-            available.extend([
-                "musubi.hunyuan_video",
-                "musubi.qwen_image"
-            ])
-        
-        return available
-    
-    @staticmethod
-    def auto_detect_musubi() -> Optional[str]:
-        """自动检测 Musubi-Tuner 安装路径"""
-        # 常见的安装位置
-        search_paths = [
-            Path.cwd() / "musubi-tuner",
-            Path.home() / "musubi-tuner", 
-            Path("/opt/musubi-tuner"),
-            Path("C:/musubi-tuner"),
+        # 检查关键训练脚本
+        required_scripts = [
+            "src/musubi_tuner/qwen_image_train_network.py",
+            "src/musubi_tuner/qwen_image_cache_latents.py",
+            "src/musubi_tuner/qwen_image_cache_text_encoder_outputs.py"
         ]
         
-        # 搜索环境变量
-        if "MUSUBI_DIR" in os.environ:
-            search_paths.insert(0, Path(os.environ["MUSUBI_DIR"]))
+        missing_scripts = []
+        for script in required_scripts:
+            script_path = musubi_dir / script
+            if not script_path.exists():
+                missing_scripts.append(script)
         
-        for path in search_paths:
-            if path.exists() and (path / "src" / "musubi_tuner").exists():
-                log_info(f"自动检测到 Musubi-Tuner: {path}")
-                return str(path)
+        if missing_scripts:
+            return {
+                "available": False,
+                "status": f"训练脚本缺失: {', '.join(missing_scripts)}"
+            }
         
-        return None
+        # 检查Python环境和accelerate命令
+        try:
+            result = subprocess.run(
+                ["accelerate", "--help"], 
+                capture_output=True, 
+                text=True, 
+                timeout=5
+            )
+            if result.returncode != 0:
+                return {
+                    "available": False,
+                    "status": "accelerate命令不可用，请安装: pip install accelerate"
+                }
+        except FileNotFoundError:
+            return {
+                "available": False,
+                "status": "accelerate命令未找到，请安装: pip install accelerate"
+            }
+        except subprocess.TimeoutExpired:
+            return {
+                "available": False,
+                "status": "accelerate命令检查超时"
+            }
+        
+        # 检查musubi_tuner模块是否可导入
+        import sys
+        musubi_src = musubi_dir / 'src'
+        old_path = sys.path.copy()
+        try:
+            if str(musubi_src) not in sys.path:
+                sys.path.insert(0, str(musubi_src))
+            
+            import musubi_tuner
+            # 检查关键模块
+            from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_QWEN_IMAGE
+            
+        except ImportError as e:
+            sys.path = old_path
+            error_msg = str(e)
+            
+            # 提取缺失的依赖名
+            if "No module named" in error_msg:
+                if "'" in error_msg:
+                    missing_dep = error_msg.split("'")[1]
+                else:
+                    missing_dep = error_msg.replace("No module named ", "").strip()
+            else:
+                missing_dep = "未知依赖"
+            
+            # 常见依赖的特定安装建议
+            install_suggestions = {
+                "cv2": "opencv-python==4.10.0.84",
+                "torch": "torch torchvision",
+                "transformers": "transformers==4.54.1",
+                "diffusers": "diffusers==0.32.1",
+                "accelerate": "accelerate==1.6.0",
+                "numpy": "numpy",
+                "safetensors": "safetensors==0.4.5",
+                "musubi_tuner": "完整musubi-tuner依赖"
+            }
+            
+            suggested_package = install_suggestions.get(missing_dep, missing_dep)
+            
+            return {
+                "available": False,
+                "status": f"Musubi依赖缺失: {missing_dep}\n\n🔧 推荐解决方案:\n1. cd third_party/musubi-tuner\n2. pip install -e .\n\n📦 或手动安装关键包:\npip install opencv-python torch accelerate transformers diffusers safetensors\n\n⚠️ 当前缺失: {suggested_package}"
+            }
+        except Exception as e:
+            sys.path = old_path
+            return {
+                "available": False,
+                "status": f"Musubi模块检查失败: {e}"
+            }
+        finally:
+            sys.path = old_path
+        
+        return {
+            "available": True,
+            "status": "Musubi-Tuner 就绪，所有组件正常"
+        }
+        
+    except Exception as e:
+        log_error(f"检查Musubi状态失败: {e}")
+        return {
+            "available": False,
+            "status": f"检查失败: {str(e)}"
+        }
 
 
-# 便捷函数
-def check_musubi_status() -> dict:
-    """检查 Musubi 状态并返回详细信息"""
-    is_available, status, missing = MusubiHelper.check_installation()
+def get_available_training_backends() -> Dict[str, bool]:
+    """获取可用的训练后端"""
+    musubi_dir = Path(get_musubi_path())
     
-    return {
-        "available": is_available,
-        "status": status,
-        "missing_components": missing,
-        "installation_guide": MusubiHelper.get_installation_guide() if not is_available else None,
-        "auto_detected_path": MusubiHelper.auto_detect_musubi()
+    backends = {
+        "qwen_image": False,
+        "flux": False,
+        "sd": False
     }
+    
+    if not musubi_dir.exists():
+        return backends
+    
+    # 检查各个模型的训练脚本
+    script_mapping = {
+        "qwen_image": "src/musubi_tuner/qwen_image_train_network.py",
+        "flux": "src/musubi_tuner/flux_train_network.py",
+        "sd": "src/musubi_tuner/sd_train_network.py"
+    }
+    
+    for backend, script_path in script_mapping.items():
+        if (musubi_dir / script_path).exists():
+            backends[backend] = True
+    
+    return backends
+
+
+def validate_musubi_installation() -> bool:
+    """验证Musubi-Tuner安装完整性"""
+    status = check_musubi_status()
+    if not status["available"]:
+        log_error(f"Musubi-Tuner不可用: {status['status']}")
+        return False
+    
+    log_success("Musubi-Tuner验证通过")
+    return True
+
+
+def get_training_script_path(training_type: str) -> str:
+    """获取训练脚本路径"""
+    musubi_dir = Path(get_musubi_path())
+    
+    script_mapping = {
+        "qwen_image": "src/musubi_tuner/qwen_image_train_network.py",
+        "flux": "src/musubi_tuner/flux_train_network.py", 
+        "sd": "src/musubi_tuner/sd_train_network.py"
+    }
+    
+    if training_type not in script_mapping:
+        raise ValueError(f"不支持的训练类型: {training_type}")
+    
+    script_path = musubi_dir / script_mapping[training_type]
+    if not script_path.exists():
+        raise FileNotFoundError(f"训练脚本不存在: {script_path}")
+    
+    return str(script_path)

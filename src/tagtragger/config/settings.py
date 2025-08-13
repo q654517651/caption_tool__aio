@@ -34,7 +34,6 @@ class StableDiffusionPaths:
 @dataclass
 class ModelPaths:
     """模型路径配置 - 按训练类型分组"""
-    musubi_dir: str = ""  # Musubi训练器目录
     qwen_image: QwenImagePaths = None
     flux: FluxPaths = None
     stable_diffusion: StableDiffusionPaths = None
@@ -140,7 +139,6 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             if 'model_paths' in data:
                 mp_data = data['model_paths']
                 config.model_paths = ModelPaths()
-                config.model_paths.musubi_dir = mp_data.get('musubi_dir', '')
                 
                 # 处理嵌套的模型路径配置
                 if 'qwen_image' in mp_data:
@@ -186,7 +184,6 @@ def save_config(config: Optional[AppConfig] = None, config_path: Optional[str] =
     # 转换为字典
     config_data = {
         'model_paths': {
-            'musubi_dir': config.model_paths.musubi_dir,
             'qwen_image': asdict(config.model_paths.qwen_image),
             'flux': asdict(config.model_paths.flux),
             'stable_diffusion': asdict(config.model_paths.stable_diffusion)
@@ -209,12 +206,11 @@ def get_config_path() -> str:
 
 def get_app_data_dir() -> str:
     """获取应用数据目录"""
-    home = Path.home()
-    if os.name == 'nt':  # Windows
-        app_data = os.environ.get('APPDATA', home / 'AppData' / 'Roaming')
-        return os.path.join(app_data, 'TagTracker')
-    else:  # Linux/Mac
-        return os.path.join(home, '.tagtracker')
+    # 使用程序根目录存储配置文件
+    program_dir = Path(__file__).parent.parent.parent
+    config_dir = program_dir / "config"
+    config_dir.mkdir(exist_ok=True)
+    return str(config_dir)
 
 def update_config(**kwargs):
     """更新配置"""

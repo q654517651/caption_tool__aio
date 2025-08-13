@@ -1,0 +1,65 @@
+{
+  "model_paths": {
+    "musubi_dir": "",
+    "qwen_image": {
+      "dit_path": "D:\\AI\\Qwen-model\\qwen_image_bf16.safetensors",
+      "vae_path": "D:\\AI\\Qwen-model\\vae.safetensors",
+      "text_encoder_path": "D:\\AI\\Qwen-model\\qwen_2.5_vl_7b.safetensors"
+    },
+    "flux": {
+      "dit_path": "",
+      "vae_path": "",
+      "text_encoder_path": "",
+      "clip_path": ""
+    },
+    "stable_diffusion": {
+      "unet_path": "",
+      "vae_path": "",
+      "text_encoder_path": "",
+      "clip_path": ""
+    }
+  },
+  "labeling": {
+    "default_prompt": "你是一名图像理解专家，请根据以下图片内容，生成自然流畅、具体清晰的图像描述。要求如下：\n1. 使用简洁准确的中文句子，使用逗号进行连接；\n2. 避免使用\"图中\"、\"这是一张图片\"等冗余措辞；\n3. 语言风格自然、具象，不使用抽象形容词或主观感受；\n4. 描述的内容不要重复\n5. 将描述结构划分为以下模块，并标明模块标题；\n\n【输出格式】\n请按以下模块生成描述：\n【主体与外貌】\n【服饰与道具】\n【动作与姿态】\n【环境与场景】\n【氛围与光效】\n【镜头视角信息】\n\n开始生成",
+    "translation_prompt": "【FLUX LoRA 图像打标专用翻译 Prompt】\n将下方中文描述翻译为英文，严格遵守以下硬性规则：\n\n1.准确传达原意，不得加入任何主观润色或感情色彩修饰。\n2.全句仅使用主动语态，每句动作锚点必须前置，静态锚点必须具备可视化实体描述。\n3.每个视觉锚点必须拆解成一句独立短句，禁止在同一句出现多个动作、道具、服饰或背景信息。\n4.句子顺序固定为：主体外貌 → 动作姿态 → 服饰道具 → 场景背景 → 光效氛围，严禁顺序颠倒。\n5.句子之间仅使用英文逗号, 连接，不允许句子内部使用逗号。\n6.禁止使用\"and / but / or\"等连词，禁止使用被动语态，禁止任何修饰性从句。\n7.输出格式为：一整行英文逗号串，最后以英文句号. 结尾。\n8.仅输出英文翻译，不要输出任何标签、换行或解释说明。\n\n开始翻译：",
+    "model_type": "LM_STUDIO",
+    "delay_between_calls": 2.0
+  },
+  "training": {
+    "default_epochs": 16,
+    "default_batch_size": 2,
+    "default_learning_rate": 0.0001,
+    "default_resolution": "1024,1024",
+    "memory_presets": {
+      "low": {
+        "fp8_base": true,
+        "fp8_scaled": true,
+        "blocks_to_swap": 45
+      },
+      "medium": {
+        "fp8_base": true,
+        "fp8_scaled": true,
+        "blocks_to_swap": 16
+      },
+      "high": {
+        "fp8_base": false,
+        "fp8_scaled": false,
+        "blocks_to_swap": 0
+      }
+    }
+  },
+  "storage": {
+    "workspace_root": "./workspace",
+    "datasets_dir": "datasets",
+    "cache_dir": "cache",
+    "models_dir": "models",
+    "medium_max_side": 1280,
+    "preview_max_side": 512
+  },
+  "ui": {
+    "theme_mode": "light",
+    "window_width": 1400,
+    "window_height": 900,
+    "cards_per_row": 4
+  }
+}

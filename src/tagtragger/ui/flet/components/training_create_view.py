@@ -275,6 +275,20 @@ class TrainingCreateView:
             input_filter=ft.NumbersOnlyInputFilter()
         )
 
+        # 数据集bucket选项
+        self.enable_bucket_switch = ft.Switch(
+            label="启用Bucket",
+            value=True
+        )
+
+        # 保存设置
+        self.save_every_n_epochs_field = ft.TextField(
+            label="每N轮保存一次",
+            value="1",
+            width=200,
+            input_filter=ft.NumbersOnlyInputFilter()
+        )
+
         self.advanced_params_container = ft.Container(
             content=ft.Column([
                 ft.Text("高级参数", size=16, weight=ft.FontWeight.BOLD),
@@ -288,7 +302,8 @@ class TrainingCreateView:
                 ft.Row([self.attention_type_dropdown, self.split_attn_switch]),
                 ft.Row([self.blocks_to_swap_field, self.resolution_field]),
                 ft.Row([self.repeats_field, self.seed_field]),
-                ft.Row([self.max_data_loader_n_workers_field, self.persistent_data_loader_workers_switch])
+                ft.Row([self.max_data_loader_n_workers_field, self.persistent_data_loader_workers_switch]),
+                ft.Row([self.enable_bucket_switch, self.save_every_n_epochs_field])
             ], spacing=15),
             visible=False
         )
@@ -362,9 +377,17 @@ class TrainingCreateView:
         blocks_to_swap = int(self.blocks_to_swap_field.value) if self.blocks_to_swap_field.value else 0
         max_data_loader_n_workers = int(self.max_data_loader_n_workers_field.value) if self.max_data_loader_n_workers_field.value else 2
         seed = int(self.seed_field.value) if self.seed_field.value else 42
+        save_every_n_epochs = int(self.save_every_n_epochs_field.value) if self.save_every_n_epochs_field.value else 1
+        
+        # 获取全局配置中的模型路径
+        from ....config import get_config
+        app_config = get_config()
 
         # 创建Qwen-Image特定配置
         qwen_config = QwenImageConfig(
+            dit_path=app_config.model_paths.qwen_image.dit_path,
+            vae_path=app_config.model_paths.qwen_image.vae_path,
+            text_encoder_path=app_config.model_paths.qwen_image.text_encoder_path,
             mixed_precision=self.mixed_precision_dropdown.value,
             timestep_sampling=self.timestep_sampling_dropdown.value,
             weighting_scheme=self.weighting_scheme_dropdown.value,
@@ -392,6 +415,8 @@ class TrainingCreateView:
             network_dim=network_dim,
             network_alpha=network_alpha,
             repeats=repeats,
+            enable_bucket=self.enable_bucket_switch.value,
+            save_every_n_epochs=save_every_n_epochs,
             max_data_loader_n_workers=max_data_loader_n_workers,
             persistent_data_loader_workers=self.persistent_data_loader_workers_switch.value,
             seed=seed,

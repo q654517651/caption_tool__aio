@@ -12,384 +12,364 @@ from typing import Dict, List, Optional, Callable, Any, Tuple
 from datetime import datetime
 
 from .models import TrainingConfig, TrainingTask, TrainingState, TrainingType
-from .qwen_trainer import QwenImageTrainer
 from ..common.events import EventBus, JobQueue, Job
 from ...utils.logger import log_info, log_error, log_success
 from ...utils.exceptions import TrainingError, TrainingNotFoundError
 from ...config import get_config
-
-# ✅ 从 trainers.types 引用，避免循环导入
-from trainers.types import TrainingConfig as OldTrainingConfig, TrainingBackend
-from trainers.musubi_qwen_image import MusubiQwenImageTrainer
 from .trainers.musubi_trainer import MusubiTrainer
+
 
 class TrainingManager:
     """训练任务管理器"""
-    
+
     def __init__(self, bus: Optional[EventBus] = None, queue: Optional[JobQueue] = None):
         self.config = get_config()
         self.tasks: Dict[str, TrainingTask] = {}
-        self.trainers = {
-            TrainingType.QWEN_IMAGE_LORA: QwenImageTrainer()
-        }
-        
+
         # 事件总线和任务队列（来自旧版training_manager.py）
         self.bus = bus
         self.queue = queue
-        
-        # 初始化训练器实例
-        self._trainers = {
-            TrainingBackend.MUSUBI_QWEN_IMAGE: MusubiQwenImageTrainer(self.bus),
-        }
-        
-        # 延迟初始化 Musubi 训练器（避免启动时的依赖检查）
-        if self.bus and TrainingBackend.MUSUBI_HUNYUAN_VIDEO:
-            try:
-                musubi_trainer = MusubiTrainer(self.bus)
-                self._trainers[TrainingBackend.MUSUBI_HUNYUAN_VIDEO] = musubi_trainer
-            except Exception as e:
-                log_error(f"Musubi 训练器初始化失败: {e}")
-                # 不阻止应用启动，用户可以稍后配置
+
+        # 初始化统一的训练器
+        try:
+            self.musubi_trainer = MusubiTrainer(self.bus)
+            log_info("Musubi 训练器初始化成功")
+        except Exception as e:
+            log_error(f"Musubi 训练器初始化失败: {e}")
+            self.musubi_trainer = None
+
         # task_id -> (last_ts, last_step)
         self._speed_cache: Dict[str, Tuple[float, int]] = {}
-        
+
         # 任务持久化目录
         self.tasks_dir = Path(self.config.storage.workspace_root) / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 事件回调
         self.callbacks: Dict[str, List[Callable]] = {
             'task_state': [],
             'task_progress': [],
             'task_log': []
         }
-        
+
         # 加载现有任务
         self.load_tasks()
-    
-    def total_steps(self, cfg: OldTrainingConfig) -> int:
-        """
-        总步数只与样本数/重复/轮数/batch/梯度累计相关（按你的规则）
-        """
-        num = cfg.dataset_size * max(1, cfg.repeats)
-        denom = max(1, cfg.batch_size * max(1, cfg.grad_accum))
-        steps_per_epoch = math.ceil(num / denom)
-        return steps_per_epoch * max(1, cfg.epochs)
-    
-    def run_training(self, cfg: OldTrainingConfig) -> str:
-        """
-        创建并提交训练任务，返回 job_id
-        """
-        total = self.total_steps(cfg)
-        trainer = self._trainers[cfg.backend]
-        job: Job = trainer.build_job(cfg, total_steps=total)
-
-        def _on_prog(p: dict):
-            """
-            统一进度事件出口：优先用后端提供的 eta，
-            缺失/不准时用本地回退估算（最近窗口 steps/sec）
-            """
-            now = time.time()
-            step = int(p.get("step", 0))
-            eta = p.get("eta_secs", None)
-
-            if eta in (None, 0):
-                last = self._speed_cache.get(job.id)
-                if last:
-                    t0, s0 = last
-                    dt = max(1e-3, now - t0)
-                    ds = max(0, step - s0)
-                    sps = ds / dt
-                    remain = max(0, total - step)
-                    eta = int(remain / sps) if sps > 0 else None
-                self._speed_cache[job.id] = (now, step)
-
-            # 向总线抛统一进度
-            payload = {
-                "id": job.id,
-                **p,
-                "total_steps": total,
-                "eta_secs": eta,
-            }
-            self.bus.emit("task_progress", payload)
-
-        # 提交到队列
-        jid = self.queue.submit(
-            Job(
-                id=job.id,
-                name=cfg.name,
-                run=lambda log_cb, progress_cb: trainer.run(
-                    log_cb, _on_prog, cfg, total
-                ),
-                cancel=lambda: trainer.cancel(),
-            )
-        )
-        return jid
 
     def create_task(self, config: TrainingConfig) -> str:
         """创建训练任务"""
         try:
-            # 生成任务ID
             task_id = str(uuid.uuid4())
-            config.task_id = task_id
-            
-            # 创建任务
-            task = TrainingTask(task_id=task_id, config=config)
-            self.tasks[task_id] = task
-            
+
+            # 创建任务对象
+            task = TrainingTask(
+                id=task_id,
+                name=config.name,
+                config=config,
+                state=TrainingState.PENDING,
+                created_at=datetime.now(),
+                progress=0.0,
+                logs=[]
+            )
+
             # 保存任务
-            self.save_task(task_id)
-            
-            # 通知任务创建
-            self.emit('task_state', {
-                'id': task_id,
-                'state': task.state.value,
-                'name': config.name
-            })
-            
-            log_info(f"创建训练任务: {config.name} ({task_id})")
+            self.tasks[task_id] = task
+            self.save_task(task)
+
+            log_info(f"创建训练任务: {config.name} (ID: {task_id})")
             return task_id
-            
+
         except Exception as e:
-            log_error(f"创建训练任务失败: {str(e)}")
-            raise TrainingError(f"创建任务失败: {str(e)}")
-    
+            log_error(f"创建训练任务失败: {e}")
+            raise TrainingError(f"创建训练任务失败: {e}")
+
     def start_task(self, task_id: str) -> bool:
-        """启动训练任务"""
+        """开始训练任务"""
         try:
-            if task_id not in self.tasks:
-                raise TrainingNotFoundError(task_id)
-            
-            task = self.tasks[task_id]
-            
+            task = self.get_task(task_id)
+            if not task:
+                raise TrainingNotFoundError(f"任务不存在: {task_id}")
+
             if task.state != TrainingState.PENDING:
-                raise TrainingError(f"任务状态无效: {task.state.value}")
-            
-            # 获取对应的训练器
-            trainer = self.trainers.get(task.config.training_type)
-            if not trainer:
-                raise TrainingError(f"不支持的训练类型: {task.config.training_type}")
-            
-            # 设置为准备状态
-            task.state = TrainingState.PREPARING
-            task.started_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # 通知状态变更
-            self.emit('task_state', {
-                'id': task_id,
-                'state': task.state.value
-            })
-            
-            # 保存状态变更
-            self.save_task(task_id)
-            
-            # 创建回调函数
-            def progress_callback(progress_info: Dict[str, Any]):
-                self._on_training_progress(task_id, progress_info)
-            
-            def log_callback(log_line: str):
-                self._on_training_log(task_id, log_line)
-            
-            # 在新线程中启动训练
-            def training_thread():
+                log_error(f"任务状态不允许启动: {task.state}")
+                return False
+
+            # 更新任务状态
+            task.state = TrainingState.RUNNING
+            task.started_at = datetime.now()
+            self.save_task(task)
+
+            # 检查训练器可用性
+            if not self.musubi_trainer:
+                raise TrainingError("Musubi训练器未初始化")
+
+            # 直接启动训练（简化逻辑）
+            def run_training():
                 try:
-                    success = trainer.run_training(task, progress_callback, log_callback)
+                    success = self.musubi_trainer.run_training(
+                        task,
+                        progress_callback=lambda data: self._on_progress(task_id, data),
+                        log_callback=lambda line: self._on_log(task_id, line)
+                    )
+                    
                     if success:
-                        task.completed_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        task.state = TrainingState.COMPLETED
+                        task.progress = 1.0
                         log_success(f"训练任务完成: {task.config.name}")
-                    self.save_task(task_id)
+                    else:
+                        task.state = TrainingState.FAILED
+                        log_error(f"训练任务失败: {task.config.name}")
+                        
                 except Exception as e:
                     task.state = TrainingState.FAILED
                     task.error_message = str(e)
-                    log_error(f"训练任务异常: {str(e)}")
-                    self.save_task(task_id)
-            
-            thread = threading.Thread(target=training_thread, daemon=True)
-            thread.start()
-            
-            log_info(f"启动训练任务: {task.config.name}")
+                    log_error(f"训练任务异常: {e}")
+                finally:
+                    task.completed_at = datetime.now()
+                    self.save_task(task)
+                    self._emit_event('task_state', {'task_id': task_id, 'state': task.state})
+
+            training_thread = threading.Thread(target=run_training, daemon=True)
+            training_thread.start()
+
+            log_info(f"开始训练任务: {task.name}")
             return True
-            
+
         except Exception as e:
-            log_error(f"启动训练任务失败: {str(e)}")
+            log_error(f"启动训练任务失败: {e}")
             return False
-    
+
+
     def cancel_task(self, task_id: str) -> bool:
         """取消训练任务"""
         try:
-            if task_id not in self.tasks:
-                raise TrainingNotFoundError(task_id)
-            
-            task = self.tasks[task_id]
-            
-            if task.state not in [TrainingState.PENDING, TrainingState.PREPARING, TrainingState.RUNNING]:
+            task = self.get_task(task_id)
+            if not task:
                 return False
-            
-            # 获取训练器并取消
-            trainer = self.trainers.get(task.config.training_type)
-            if trainer:
-                trainer.cancel_training()
-            
+
+            if task.state != TrainingState.RUNNING:
+                return False
+
+            # 取消训练
+            if self.musubi_trainer:
+                self.musubi_trainer.cancel_training()
+                
             task.state = TrainingState.CANCELLED
-            self.save_task(task_id)
-            
-            # 通知状态变更
-            self.emit('task_state', {
-                'id': task_id,
-                'state': task.state.value
-            })
-            
-            log_info(f"取消训练任务: {task.config.name}")
+            task.completed_at = datetime.now()
+            self.save_task(task)
+
+            log_info(f"取消训练任务: {task.name}")
+            self._emit_event('task_state', {'task_id': task_id, 'state': task.state})
             return True
-            
+
         except Exception as e:
-            log_error(f"取消训练任务失败: {str(e)}")
+            log_error(f"取消训练任务失败: {e}")
             return False
-    
-    def cancel(self, job_id: str) -> bool:
-        """取消训练任务（来自旧版training_manager.py）"""
-        return self.queue.cancel(job_id)
-    
+
     def delete_task(self, task_id: str) -> bool:
         """删除训练任务"""
         try:
-            if task_id not in self.tasks:
-                raise TrainingNotFoundError(task_id)
-            
-            task = self.tasks[task_id]
-            
-            # 如果任务正在运行，先取消
-            if task.state in [TrainingState.PREPARING, TrainingState.RUNNING]:
-                self.cancel_task(task_id)
-            
+            task = self.get_task(task_id)
+            if not task:
+                return False
+
+            # 不能删除正在运行的任务
+            if task.state == TrainingState.RUNNING:
+                log_error("不能删除正在运行的任务")
+                return False
+
             # 删除任务文件
             task_file = self.tasks_dir / f"{task_id}.json"
             if task_file.exists():
                 task_file.unlink()
-            
+
             # 从内存中删除
             del self.tasks[task_id]
-            
-            log_info(f"删除训练任务: {task.config.name}")
+
+            log_info(f"删除训练任务: {task.name}")
             return True
-            
+
         except Exception as e:
-            log_error(f"删除训练任务失败: {str(e)}")
+            log_error(f"删除训练任务失败: {e}")
             return False
-    
+
     def get_task(self, task_id: str) -> Optional[TrainingTask]:
         """获取训练任务"""
         return self.tasks.get(task_id)
-    
+
     def list_tasks(self) -> List[TrainingTask]:
-        """获取所有训练任务"""
+        """列出所有训练任务"""
         return list(self.tasks.values())
-    
-    def get_memory_estimate(self, config: TrainingConfig) -> Dict[str, Any]:
-        """获取显存使用预估"""
-        trainer = self.trainers.get(config.training_type)
-        if trainer and hasattr(trainer, 'get_memory_usage_estimate'):
-            return trainer.get_memory_usage_estimate(config)
-        return {"estimated_vram_mb": 0, "estimated_vram_gb": 0.0}
-    
-    def save_task(self, task_id: str):
-        """保存任务到文件"""
+
+    def save_task(self, task: TrainingTask) -> None:
+        """保存训练任务到文件"""
         try:
-            if task_id not in self.tasks:
-                return
-            
-            task = self.tasks[task_id]
-            task_file = self.tasks_dir / f"{task_id}.json"
-            
+            task_file = self.tasks_dir / f"{task.id}.json"
+            task_data = {
+                'id': task.id,
+                'name': task.name,
+                'config': {
+                    'name': task.config.name,
+                    'training_type': task.config.training_type.value,
+                    'dataset_id': task.config.dataset_id,
+                    'task_id': task.config.task_id,
+                    'epochs': task.config.epochs,
+                    'batch_size': task.config.batch_size,
+                    'learning_rate': task.config.learning_rate,
+                    'resolution': task.config.resolution,
+                    'network_dim': task.config.network_dim,
+                    'network_alpha': task.config.network_alpha,
+                    'repeats': task.config.repeats,
+                    'dataset_size': task.config.dataset_size,
+                    'enable_bucket': task.config.enable_bucket,
+                    'optimizer': task.config.optimizer,
+                    'scheduler': task.config.scheduler,
+                    'sample_prompt': task.config.sample_prompt,
+                    'sample_every_n_steps': task.config.sample_every_n_steps,
+                    'save_every_n_epochs': task.config.save_every_n_epochs,
+                    'gpu_ids': task.config.gpu_ids,
+                    'max_data_loader_n_workers': task.config.max_data_loader_n_workers,
+                    'persistent_data_loader_workers': task.config.persistent_data_loader_workers,
+                    'seed': task.config.seed,
+                },
+                'state': task.state.value,
+                'progress': task.progress,
+                'created_at': task.created_at.isoformat(),
+                'started_at': task.started_at.isoformat() if task.started_at else None,
+                'completed_at': task.completed_at.isoformat() if task.completed_at else None,
+                'logs': task.logs[-100:]  # 只保存最近100条日志
+            }
+
             with open(task_file, 'w', encoding='utf-8') as f:
-                json.dump(task.to_dict(), f, ensure_ascii=False, indent=2)
-                
+                json.dump(task_data, f, indent=2, ensure_ascii=False)
+
         except Exception as e:
-            log_error(f"保存训练任务失败 {task_id}: {str(e)}")
-    
-    def load_tasks(self):
-        """加载所有任务"""
+            log_error(f"保存训练任务失败: {e}")
+
+    def load_tasks(self) -> None:
+        """从文件加载训练任务"""
         try:
             for task_file in self.tasks_dir.glob("*.json"):
                 try:
                     with open(task_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    
-                    task = TrainingTask.from_dict(data)
-                    self.tasks[task.task_id] = task
-                    
+                        task_data = json.load(f)
+
+                    # 重构配置对象
+                    config_data = task_data['config']
+                    config = TrainingConfig(
+                        name=config_data['name'],
+                        training_type=TrainingType(
+                            config_data.get('training_type', config_data.get('type', 'qwen_image_lora'))),
+                        dataset_id=config_data['dataset_id'],
+                        task_id=config_data.get('task_id', ''),
+                        epochs=config_data.get('epochs', 16),
+                        batch_size=config_data.get('batch_size', 1),
+                        learning_rate=config_data.get('learning_rate', 1e-4),
+                        resolution=config_data.get('resolution', '1024,1024'),
+                        network_dim=config_data.get('network_dim', 32),
+                        network_alpha=config_data.get('network_alpha', 16),
+                        repeats=config_data.get('repeats', 1),
+                        dataset_size=config_data.get('dataset_size', 0),
+                        enable_bucket=config_data.get('enable_bucket', True),
+                        optimizer=config_data.get('optimizer', 'adamw8bit'),
+                        scheduler=config_data.get('scheduler', 'cosine'),
+                        sample_prompt=config_data.get('sample_prompt', ''),
+                        sample_every_n_steps=config_data.get('sample_every_n_steps', 200),
+                        save_every_n_epochs=config_data.get('save_every_n_epochs', 1),
+                        gpu_ids=config_data.get('gpu_ids', [0]),
+                        max_data_loader_n_workers=config_data.get('max_data_loader_n_workers', 2),
+                        persistent_data_loader_workers=config_data.get('persistent_data_loader_workers', True),
+                        seed=config_data.get('seed', 42),
+                    )
+
+                    # 重构任务对象
+                    task = TrainingTask(
+                        id=task_data['id'],
+                        name=task_data['name'],
+                        config=config,
+                        state=TrainingState(task_data['state']),
+                        progress=task_data.get('progress', 0.0),
+                        created_at=datetime.fromisoformat(task_data['created_at']),
+                        started_at=datetime.fromisoformat(task_data['started_at']) if task_data.get(
+                            'started_at') else None,
+                        completed_at=datetime.fromisoformat(task_data['completed_at']) if task_data.get(
+                            'completed_at') else None,
+                        logs=task_data.get('logs', [])
+                    )
+
+                    self.tasks[task.id] = task
+
                 except Exception as e:
-                    log_error(f"加载训练任务失败 {task_file}: {str(e)}")
-            
+                    log_error(f"加载任务文件失败 {task_file}: {e}")
+                    continue
+
             log_info(f"加载了 {len(self.tasks)} 个训练任务")
-            
+
         except Exception as e:
-            log_error(f"加载训练任务列表失败: {str(e)}")
-    
-    def register_callback(self, event: str, callback: Callable):
-        """注册事件回调"""
-        if event in self.callbacks:
-            self.callbacks[event].append(callback)
-    
-    def unregister_callback(self, event: str, callback: Callable):
-        """注销事件回调"""
-        if event in self.callbacks and callback in self.callbacks[event]:
-            self.callbacks[event].remove(callback)
-    
-    def emit(self, event: str, data: Dict[str, Any]):
-        """触发事件"""
-        if event in self.callbacks:
-            for callback in self.callbacks[event]:
-                try:
-                    callback(data)
-                except Exception as e:
-                    log_error(f"事件回调异常 {event}: {str(e)}")
-    
-    def _on_training_progress(self, task_id: str, progress_info: Dict[str, Any]):
+            log_error(f"加载训练任务失败: {e}")
+
+    def _on_progress(self, task_id: str, progress_info: Dict[str, Any]) -> None:
         """训练进度回调"""
-        if task_id in self.tasks:
-            # 保存任务状态
-            self.save_task(task_id)
+        task = self.get_task(task_id)
+        if task:
+            # 更新任务进度信息
+            if 'progress' in progress_info:
+                task.progress = progress_info['progress']
+            if 'step' in progress_info:
+                task.current_step = progress_info['step']
+            if 'total_steps' in progress_info:
+                task.total_steps = progress_info['total_steps']
+            if 'epoch' in progress_info:
+                task.current_epoch = progress_info['epoch']
+            if 'loss' in progress_info:
+                task.loss = progress_info['loss']
+            if 'lr' in progress_info:
+                task.learning_rate = progress_info['lr']
+            if 'speed' in progress_info:
+                task.speed = progress_info['speed']
+            if 'eta_seconds' in progress_info:
+                task.eta_seconds = progress_info['eta_seconds']
+                
+            self.save_task(task)
             
             # 发送进度事件
-            progress_data = {'id': task_id, **progress_info}
-            self.emit('task_progress', progress_data)
-    
-    def _on_training_log(self, task_id: str, log_line: str):
+            event_data = {'task_id': task_id}
+            event_data.update(progress_info)
+            self._emit_event('task_progress', event_data)
+
+    def _on_log(self, task_id: str, message: str) -> None:
         """训练日志回调"""
-        self.emit('task_log', {
-            'id': task_id,
-            'line': log_line
-        })
-    
-    def get_training_presets(self) -> Dict[str, Dict[str, Any]]:
-        """获取训练预设配置"""
-        return self.config.training.memory_presets
-    
-    def create_qwen_task(self, 
-                        name: str, 
-                        dataset_id: str,
-                        dit_path: str,
-                        vae_path: str, 
-                        text_encoder_path: str,
-                        **kwargs) -> str:
-        """创建Qwen-Image训练任务的便捷方法"""
-        from .models import QwenImageConfig
-        
-        qwen_config = QwenImageConfig(
-            dit_path=dit_path,
-            vae_path=vae_path,
-            text_encoder_path=text_encoder_path,
-            **{k: v for k, v in kwargs.items() if hasattr(QwenImageConfig, k)}
-        )
-        
-        training_config = TrainingConfig(
-            task_id="",  # 将在create_task中设置
-            name=name,
-            training_type=TrainingType.QWEN_IMAGE_LORA,
-            dataset_id=dataset_id,
-            qwen_config=qwen_config,
-            **{k: v for k, v in kwargs.items() if hasattr(TrainingConfig, k)}
-        )
-        
-        return self.create_task(training_config)
+        task = self.get_task(task_id)
+        if task:
+            timestamp = datetime.now().isoformat()
+            log_entry = f"[{timestamp}] {message}"
+            task.logs.append(log_entry)
+
+            # 限制日志数量
+            if len(task.logs) > 1000:
+                task.logs = task.logs[-1000:]
+
+            self.save_task(task)
+            self._emit_event('task_log', {'task_id': task_id, 'message': log_entry})
+
+    def _emit_event(self, event: str, data: Dict[str, Any]) -> None:
+        """发送事件"""
+        callbacks = self.callbacks.get(event, [])
+        for callback in callbacks:
+            try:
+                callback(data)
+            except Exception as e:
+                log_error(f"事件回调失败: {e}")
+
+    def add_callback(self, event: str, callback: Callable) -> None:
+        """添加事件回调"""
+        if event not in self.callbacks:
+            self.callbacks[event] = []
+        self.callbacks[event].append(callback)
+
+    def remove_callback(self, event: str, callback: Callable) -> None:
+        """移除事件回调"""
+        if event in self.callbacks:
+            try:
+                self.callbacks[event].remove(callback)
+            except ValueError:
+                pass

@@ -2,6 +2,6 @@
 Training module
 """
 
-from .models import TrainingConfig, TrainingTask, TrainingState
+from .models import TrainingConfig, TrainingTask, TrainingState, TrainingType, TRAINING_PRESETS
 from .manager import TrainingManager
-from .qwen_trainer import QwenImageTrainer
+from .trainers.musubi_trainer import MusubiTrainer

@@ -45,10 +45,10 @@ class QwenImageConfig:
 class TrainingConfig:
     """训练配置"""
     # 基础配置
-    task_id: str
     name: str
-    training_type: TrainingType
+    training_type: TrainingType  # 保持与UI一致的字段名
     dataset_id: str
+    task_id: str = ""  # 向后兼容UI传递的task_id
     
     # 训练参数
     epochs: int = 16
@@ -60,44 +60,49 @@ class TrainingConfig:
     
     # 数据集参数
     repeats: int = 1
-    enable_bucket: bool = False
-    min_bucket_reso: int = 512
-    max_bucket_reso: int = 2048
-    bucket_reso_steps: int = 64
+    dataset_size: int = 0
+    enable_bucket: bool = True  # 添加缺失的enable_bucket字段
     
     # 优化器和调度器
     optimizer: str = "adamw8bit"
     scheduler: str = "cosine"
-    warmup_steps: int = 0
     
     # 采样配置
     sample_prompt: str = ""
     sample_every_n_steps: int = 200
-    sample_resolution: str = "1024,1024"
     
     # 保存配置
-    save_every_n_epochs: int = 1
-    max_train_steps: Optional[int] = None
+    save_every_n_epochs: int = 1  # 添加缺失的save_every_n_epochs字段
     
     # GPU配置
     gpu_ids: List[int] = field(default_factory=lambda: [0])
     
-    # 特定配置
-    qwen_config: QwenImageConfig = field(default_factory=QwenImageConfig)
-    
-    # 高级选项
+    # 数据加载器配置（UI传递的字段）
     max_data_loader_n_workers: int = 2
     persistent_data_loader_workers: bool = True
+    
+    # 模型特定配置
+    qwen_config: QwenImageConfig = field(default_factory=QwenImageConfig)
+    flux_config: Optional['FluxConfig'] = None
+    sd_config: Optional['StableDiffusionConfig'] = None
+    
+    # 高级选项
     seed: int = 42
+    
+    @property
+    def type(self) -> TrainingType:
+        """向后兼容的type属性"""
+        return self.training_type
     
     def __post_init__(self):
         if isinstance(self.training_type, str):
             self.training_type = TrainingType(self.training_type)
 
-@dataclass
+@dataclass  
 class TrainingTask:
     """训练任务"""
-    task_id: str
+    id: str  # 使用id而不是task_id，保持与TrainingManager一致
+    name: str
     config: TrainingConfig
     state: TrainingState = TrainingState.PENDING
     progress: float = 0.0
@@ -108,12 +113,11 @@ class TrainingTask:
     learning_rate: float = 0.0
     eta_seconds: Optional[int] = None
     speed: Optional[float] = None  # it/s
-    created_time: Optional[str] = None
-    started_time: Optional[str] = None
-    completed_time: Optional[str] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    logs: List[str] = field(default_factory=list)
     error_message: str = ""
-    
-    # 输出路径
     output_dir: str = ""
     checkpoint_files: List[str] = field(default_factory=list)
     sample_images: List[str] = field(default_factory=list)
@@ -121,107 +125,80 @@ class TrainingTask:
     def __post_init__(self):
         if isinstance(self.state, str):
             self.state = TrainingState(self.state)
-        if self.created_time is None:
-            self.created_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if self.created_at is None:
+            self.created_at = datetime.now()
+    
+    @property
+    def created_time(self) -> str:
+        """向后兼容的created_time属性"""
+        if self.created_at:
+            return self.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        return ""
+    
+    @property
+    def task_id(self) -> str:
+        """向后兼容的task_id属性"""
+        return self.id
 
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            'task_id': self.task_id,
-            'config': {
-                'task_id': self.config.task_id,
-                'name': self.config.name,
-                'training_type': self.config.training_type.value,
-                'dataset_id': self.config.dataset_id,
-                'epochs': self.config.epochs,
-                'batch_size': self.config.batch_size,
-                'learning_rate': self.config.learning_rate,
-                'resolution': self.config.resolution,
-                'network_dim': self.config.network_dim,
-                'network_alpha': self.config.network_alpha,
-                'repeats': self.config.repeats,
-                'sample_prompt': self.config.sample_prompt,
-                'sample_every_n_steps': self.config.sample_every_n_steps,
-                'gpu_ids': self.config.gpu_ids,
-                'qwen_config': {
-                    'dit_path': self.config.qwen_config.dit_path,
-                    'vae_path': self.config.qwen_config.vae_path,
-                    'text_encoder_path': self.config.qwen_config.text_encoder_path,
-                    'mixed_precision': self.config.qwen_config.mixed_precision,
-                    'gradient_checkpointing': self.config.qwen_config.gradient_checkpointing,
-                    'fp8_base': self.config.qwen_config.fp8_base,
-                    'fp8_scaled': self.config.qwen_config.fp8_scaled,
-                    'blocks_to_swap': self.config.qwen_config.blocks_to_swap,
-                }
-            },
-            'state': self.state.value,
-            'progress': self.progress,
-            'current_step': self.current_step,
-            'total_steps': self.total_steps,
-            'current_epoch': self.current_epoch,
-            'loss': self.loss,
-            'learning_rate': self.learning_rate,
-            'eta_seconds': self.eta_seconds,
-            'speed': self.speed,
-            'created_time': self.created_time,
-            'started_time': self.started_time,
-            'completed_time': self.completed_time,
-            'error_message': self.error_message,
-            'output_dir': self.output_dir,
-            'checkpoint_files': self.checkpoint_files,
-            'sample_images': self.sample_images,
+
+@dataclass
+class FluxConfig:
+    """Flux模型特定配置"""
+    dit_path: str = ""
+    vae_path: str = ""
+    text_encoder_path: str = ""
+    clip_path: str = ""
+    mixed_precision: str = "bf16"
+    guidance_scale: float = 3.5
+    
+@dataclass
+class StableDiffusionConfig:
+    """Stable Diffusion模型特定配置"""
+    unet_path: str = ""
+    vae_path: str = ""
+    text_encoder_path: str = ""
+    clip_path: str = ""
+    mixed_precision: str = "fp16"
+
+
+# 训练预设配置模板
+TRAINING_PRESETS = {
+    TrainingType.QWEN_IMAGE_LORA: {
+        "script_path": "src/musubi_tuner/qwen_image_train_network.py",
+        "cache_scripts": [
+            "src/musubi_tuner/qwen_image_cache_latents.py",
+            "src/musubi_tuner/qwen_image_cache_text_encoder_outputs.py"
+        ],
+        "required_models": ["dit", "vae", "text_encoder"],
+        "network_module": "musubi_tuner.networks.lora_qwen_image",
+        "default_args": {
+            "--mixed_precision": "bf16",
+            "--timestep_sampling": "shift", 
+            "--weighting_scheme": "none",
+            "--discrete_flow_shift": "3.0",
+            "--sdpa": None,  # flag参数
+            "--network_dim": "32",
+            "--network_alpha": "16"
         }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TrainingTask':
-        """从字典创建"""
-        config_data = data['config']
-        qwen_data = config_data.get('qwen_config', {})
-        
-        config = TrainingConfig(
-            task_id=config_data['task_id'],
-            name=config_data['name'],
-            training_type=TrainingType(config_data['training_type']),
-            dataset_id=config_data['dataset_id'],
-            epochs=config_data.get('epochs', 16),
-            batch_size=config_data.get('batch_size', 1),
-            learning_rate=config_data.get('learning_rate', 1e-4),
-            resolution=config_data.get('resolution', '1024,1024'),
-            network_dim=config_data.get('network_dim', 32),
-            network_alpha=config_data.get('network_alpha', 16),
-            repeats=config_data.get('repeats', 1),
-            sample_prompt=config_data.get('sample_prompt', ''),
-            sample_every_n_steps=config_data.get('sample_every_n_steps', 200),
-            gpu_ids=config_data.get('gpu_ids', [0]),
-            qwen_config=QwenImageConfig(
-                dit_path=qwen_data.get('dit_path', ''),
-                vae_path=qwen_data.get('vae_path', ''),
-                text_encoder_path=qwen_data.get('text_encoder_path', ''),
-                mixed_precision=qwen_data.get('mixed_precision', 'bf16'),
-                gradient_checkpointing=qwen_data.get('gradient_checkpointing', True),
-                fp8_base=qwen_data.get('fp8_base', False),
-                fp8_scaled=qwen_data.get('fp8_scaled', False),
-                blocks_to_swap=qwen_data.get('blocks_to_swap', 0),
-            )
-        )
-        
-        return cls(
-            task_id=data['task_id'],
-            config=config,
-            state=TrainingState(data.get('state', 'pending')),
-            progress=data.get('progress', 0.0),
-            current_step=data.get('current_step', 0),
-            total_steps=data.get('total_steps', 0),
-            current_epoch=data.get('current_epoch', 0),
-            loss=data.get('loss', 0.0),
-            learning_rate=data.get('learning_rate', 0.0),
-            eta_seconds=data.get('eta_seconds'),
-            speed=data.get('speed'),
-            created_time=data.get('created_time'),
-            started_time=data.get('started_time'),
-            completed_time=data.get('completed_time'),
-            error_message=data.get('error_message', ''),
-            output_dir=data.get('output_dir', ''),
-            checkpoint_files=data.get('checkpoint_files', []),
-            sample_images=data.get('sample_images', []),
-        )
+    },
+    TrainingType.FLUX_LORA: {
+        "script_path": "src/musubi_tuner/flux_train_network.py",
+        "required_models": ["dit", "vae", "text_encoder", "clip"],
+        "network_module": "networks.lora",
+        "default_args": {
+            "--mixed_precision": "bf16",
+            "--network_dim": "32",
+            "--network_alpha": "16"
+        }
+    },
+    TrainingType.SD_LORA: {
+        "script_path": "src/musubi_tuner/sd_train_network.py",
+        "required_models": ["unet", "vae", "text_encoder"],
+        "network_module": "networks.lora",
+        "default_args": {
+            "--mixed_precision": "fp16",
+            "--network_dim": "32",
+            "--network_alpha": "16"
+        }
+    }
+}

@@ -18,15 +18,9 @@ sys.path.insert(0, str(src_path))
 def run_flet_app():
     """运行Flet桌面应用"""
     print("启动TagTracker新架构...")
-    try:
-        from tagtragger.ui.flet.app import main as flet_main
-        flet_main()
-    except Exception as e:
-        print(f"新架构启动失败，回退到旧版本: {e}")
-        print("使用稳定版本启动...")
-        import flet as ft
-        from main_flet_old import main as old_main
-        ft.app(target=old_main, assets_dir=os.path.abspath("./workspace"))
+    # 直接运行新架构，移除旧版本回退逻辑
+    from src.tagtragger.ui.flet.app import main as flet_main
+    flet_main()
 
 
 def main():

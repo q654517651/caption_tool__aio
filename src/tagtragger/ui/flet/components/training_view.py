@@ -127,13 +127,13 @@ class TrainingListView:
                 
                 # 根据训练类型检查对应的模型路径
                 if training_type == TrainingType.QWEN_IMAGE_LORA.value:
-                    qwen_paths = app_config.model_paths.qwen_image
+                    # 修复：正确使用全局模型路径配置
                     missing_paths = []
-                    if not qwen_paths.dit_path:
+                    if not app_config.model_paths.qwen_image.dit_path:
                         missing_paths.append("DiT模型路径")
-                    if not qwen_paths.vae_path:
+                    if not app_config.model_paths.qwen_image.vae_path:
                         missing_paths.append("VAE模型路径") 
-                    if not qwen_paths.text_encoder_path:
+                    if not app_config.model_paths.qwen_image.text_encoder_path:
                         missing_paths.append("Text Encoder路径")
                     
                     if missing_paths:
@@ -142,13 +142,10 @@ class TrainingListView:
                     
                     # 创建Qwen配置，使用对应的模型路径
                     qwen_config = QwenImageConfig(
-                        dit_path=qwen_paths.dit_path,
-                        vae_path=qwen_paths.vae_path,
-                        text_encoder_path=qwen_paths.text_encoder_path
+                        dit_path=app_config.model_paths.qwen_image.dit_path,
+                        vae_path=app_config.model_paths.qwen_image.vae_path,
+                        text_encoder_path=app_config.model_paths.qwen_image.text_encoder_path
                     )
-                else:
-                    # 其他训练类型的配置
-                    qwen_config = QwenImageConfig()  # 默认空配置
                 
                 # 创建训练配置
                 config = TrainingConfig(

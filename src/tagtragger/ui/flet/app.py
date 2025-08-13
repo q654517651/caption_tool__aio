@@ -19,7 +19,7 @@ from .components import (
     ToastService, DeleteConfirmDialog,
     DatasetsView, DatasetDetailView,
     TrainingListView, TrainingDetailView,
-    TerminalService, TerminalView, TrainingCreateView
+    TrainingCreateView
 )
 
 class TagTrackerApp:
@@ -33,7 +33,6 @@ class TagTrackerApp:
         self.setup_page()
 
         # 初始化核心服务
-        self.terminal_service = TerminalService()
         self.dataset_manager = DatasetManager()
         self.labeling_service = LabelingService()
         self.training_manager = TrainingManager()
@@ -48,6 +47,11 @@ class TagTrackerApp:
 
         # 注册日志回调
         logger.register_ui_callback(self._on_log_message)
+        
+        # 注册训练事件回调
+        self.training_manager.add_callback('task_log', self._on_training_log)
+        self.training_manager.add_callback('task_progress', self._on_training_progress)
+        self.training_manager.add_callback('task_state', self._on_training_state)
 
         # 创建主要UI容器
         self.content_host = ft.Container(expand=True)
@@ -114,11 +118,6 @@ class TagTrackerApp:
                     label="创建训练"
                 ),
                 ft.NavigationRailDestination(
-                    icon=ft.Icons.TERMINAL_OUTLINED,
-                    selected_icon=ft.Icons.TERMINAL,
-                    label="终端"
-                ),
-                ft.NavigationRailDestination(
                     icon=ft.Icons.SETTINGS_OUTLINED,
                     selected_icon=ft.Icons.SETTINGS,
                     label="设置"
@@ -138,8 +137,6 @@ class TagTrackerApp:
         elif selected_index == 2:
             self.show_create_training_view()
         elif selected_index == 3:
-            self.show_terminal_view()
-        elif selected_index == 4:
             self.show_settings_view()
 
     def show_datasets_view(self):
@@ -245,6 +242,9 @@ class TagTrackerApp:
                 on_back=self.show_training_view,
                 toast_service=self.toast_service
             )
+            
+            # 保存当前详情视图的引用，用于事件回调
+            self.current_detail_view = detail_view
 
             self.content_host.content = detail_view.build()
             self.page.update()
@@ -252,22 +252,6 @@ class TagTrackerApp:
         except Exception as e:
             self.toast_service.show(f"显示训练详情失败: {str(e)}", "error")
 
-    def show_terminal_view(self):
-        """显示终端视图"""
-        try:
-            self.current_view = "terminal"
-            self.nav_rail.selected_index = 2
-
-            terminal_view = TerminalView(
-                page=self.page,
-                terminal_service=self.terminal_service
-            )
-
-            self.content_host.content = terminal_view.build()
-            self.page.update()
-
-        except Exception as e:
-            self.toast_service.show(f"显示终端视图失败: {str(e)}", "error")
 
     def show_settings_view(self):
         """显示设置视图"""
@@ -300,12 +284,6 @@ class TagTrackerApp:
             
             auto_check_status()  # 立即执行检查
             
-            # Musubi训练器目录
-            musubi_dir_field = ft.TextField(
-                label="Musubi训练器目录",
-                value=config.model_paths.musubi_dir,
-                expand=True
-            )
             
             # Qwen-Image 模型路径
             qwen_dit_field = ft.TextField(
@@ -375,7 +353,6 @@ class TagTrackerApp:
                     current_config = get_config()
                     
                     # 更新模型路径配置
-                    current_config.model_paths.musubi_dir = musubi_dir_field.value
                     
                     # Qwen-Image 路径
                     current_config.model_paths.qwen_image.dit_path = qwen_dit_field.value
@@ -474,10 +451,6 @@ class TagTrackerApp:
                         ft.Container(height=10),
                         ft.Text("📁 模型路径配置", size=18, weight=ft.FontWeight.BOLD),
                         
-                        # Musubi训练器配置
-                        ft.Container(height=10),
-                        ft.Text("🔧 Musubi训练器", size=14, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_700),
-                        musubi_dir_field,
                         
                         # Qwen-Image 配置
                         ft.Container(height=15),
@@ -551,14 +524,44 @@ class TagTrackerApp:
 
     def _on_log_message(self, message: str, level):
         """日志消息回调"""
-        # 通过terminal_service处理日志
-        if hasattr(self, 'terminal_service'):
-            if level == 'INFO':
-                self.terminal_service.log_info(message)
-            elif level == 'ERROR':
-                self.terminal_service.log_error(message)
-            elif level == 'SUCCESS':
-                self.terminal_service.log_success(message)
+        # 移除终端服务的日志处理
+        pass
+    
+    def _on_training_log(self, data: dict):
+        """训练日志回调"""
+        task_id = data.get('task_id')
+        message = data.get('message', '')
+        
+        # 如果当前正在显示这个任务的详情页，则更新日志显示
+        if (self.current_view == "training_detail" and 
+            self.current_task_id == task_id and
+            hasattr(self, 'current_detail_view')):
+            self.current_detail_view.append_log(message)
+    
+    def _on_training_progress(self, data: dict):
+        """训练进度回调"""
+        task_id = data.get('task_id')
+        progress = data.get('progress', 0.0)
+        current_step = data.get('step', 0)
+        total_steps = data.get('total_steps', 0)
+        eta_seconds = data.get('eta_seconds')
+        
+        # 如果当前正在显示这个任务的详情页，则更新进度显示
+        if (self.current_view == "training_detail" and 
+            self.current_task_id == task_id and
+            hasattr(self, 'current_detail_view')):
+            self.current_detail_view.update_progress(progress, current_step, total_steps, eta_seconds)
+    
+    def _on_training_state(self, data: dict):
+        """训练状态回调"""
+        task_id = data.get('task_id')
+        state = data.get('state', 'unknown')
+        
+        # 如果当前正在显示这个任务的详情页，则更新状态显示
+        if (self.current_view == "training_detail" and 
+            self.current_task_id == task_id and
+            hasattr(self, 'current_detail_view')):
+            self.current_detail_view.update_status(state)
 
 
 def main():

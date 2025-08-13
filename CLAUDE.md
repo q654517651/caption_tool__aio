@@ -1,7 +1,9 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-需要使用中文来回答用户的全部问题，提出方案后需要和用户确认再开始实施
+需要使用中文来回答用户的全部问题
+！！！非常重要：要先把代码实时方案和我讨论并且确认无误后再开始实施
+
 
 ## Project Overview
 
@@ -9,7 +11,7 @@ TagTracker是一个基于Python的集成打标与LoRA训练工具，支持图像
 
 ## 重构后的新架构
 
-### 目录结构
+### 目录结构 (清理后)
 ```
 tagtragger/
 ├── main.py                    # 统一入口点
@@ -18,19 +20,37 @@ tagtragger/
 │   │   ├── settings.py       # 应用配置
 │   │   └── constants.py      # 常量定义
 │   ├── core/                 # 核心业务逻辑
+│   │   ├── common/           # 公共组件
+│   │   │   └── events.py     # 事件系统
 │   │   ├── dataset/          # 数据集管理
+│   │   │   ├── manager.py    # 数据集管理器
+│   │   │   ├── models.py     # 数据模型
+│   │   │   └── image_processor.py # 图像处理
 │   │   ├── training/         # 训练管理
+│   │   │   ├── manager.py    # 训练管理器
+│   │   │   ├── models.py     # 训练模型
+│   │   │   ├── qwen_trainer.py # Qwen训练器
+│   │   │   └── trainers/     # 训练器集合
 │   │   └── labeling/         # 打标服务
+│   │       ├── service.py    # 打标服务
+│   │       └── ai_client.py  # AI客户端
 │   ├── ui/                   # 用户界面
 │   │   └── flet/             # Flet桌面界面
+│   │       ├── app.py        # 主应用
+│   │       └── components/   # UI组件
 │   ├── storage/              # 数据持久化
+│   │   └── database.py       # 数据库管理
 │   └── utils/                # 工具模块
 │       ├── exceptions.py     # 自定义异常
 │       ├── logger.py         # 统一日志系统
-│       └── validators.py     # 数据验证
-├── services/                 # 原有服务(待迁移)
-├── views/                    # 原有视图(待迁移)
+│       ├── validators.py     # 数据验证
+│       └── musubi_helper.py  # Musubi工具
+├── third_party/              # 第三方模块
+│   └── musubi-tuner/         # 训练后端
 └── workspace/                # 数据工作区
+    ├── datasets/             # 数据集存储
+    ├── models/               # 模型输出
+    └── tasks/                # 任务记录
 ```
 
 ### app功能结构
@@ -231,10 +251,14 @@ except ValidationError as e:
    - ✅ 统一启动入口 (`main.py`)
    - ✅ 自动回退机制 (新版本失败时自动使用旧版本)
 
-⚠️ **过渡期保留**:
-- 旧的`services/`目录 - 作为兼容层保留 
-- 旧的`views/`目录 - 部分组件仍在使用
-- 旧版本文件 (`main_flet_old.py`) - 作为回退选项
+✅ **架构清理完成** (2025-08-13):
+- ✅ 已删除 `services_removed/` 目录 - 旧服务模块已完全迁移
+- ✅ 已删除 `views_removed/` 目录 - 旧视图模块已完全迁移  
+- ✅ 已删除 `services/` 目录 - 重复的服务文件
+- ✅ 已删除 `settings_manager.py` - 被新配置系统取代
+- ✅ 已删除 `src/tagtragger/ui/flet/services/` - 未使用的UI服务
+- ✅ 已删除 `terminal_service.py` - 未使用的终端服务
+- ✅ 清理了所有 `.pyc` 文件和 `__pycache__` 目录
 
 ### Flet UI开发注意事项
 
@@ -296,21 +320,134 @@ ft.Icons.ADD_CIRCLE_OUTLINE, ft.Icons.ERROR
 5. 更新配置文件(`config/settings.py`)支持新功能的配置项
 6. 在主应用(`ui/flet/app.py`)中注册新服务
 
-### 后续优化计划 (可选)
+## 训练系统架构深度分析
 
-#### 阶段一：代码清理 (优先级：低)
-- 移除不再使用的`services/`和部分`views/`文件
-- 清理`main_flet_old.py`和`router.py`等过时文件  
-- 统一导入路径，减少兼容层依赖
+### 当前训练系统组成
 
-#### 阶段二：功能增强 (按需)
-- 完善UI组件的高级交互功能
-- 添加更多训练器支持
-- 实现更丰富的数据集管理功能
+#### 1. 训练管理层级
+```
+应用层 (ui/flet/app.py)
+  ├── 事件回调注册 (训练日志、进度、状态)
+  ├── 训练视图管理 (TrainingDetailView)
+  └── 用户交互处理
 
-#### 阶段三：性能优化 (按需)
-- 数据库查询优化
-- 大数据集处理性能提升
-- UI响应速度优化
+训练管理层 (core/training/manager.py)
+  ├── 任务生命周期管理 (创建、启动、取消、删除)
+  ├── 任务持久化 (JSON文件存储)
+  ├── 事件回调系统 (task_log, task_progress, task_state)
+  └── 训练器调度
 
-**注意**: 当前系统已经完全可用，上述优化为可选项目，可根据实际需求进行。
+训练器层 (core/training/qwen_trainer.py)
+  ├── 配置验证和数据集准备
+  ├── TOML配置文件生成
+  ├── Musubi-Tuner集成
+  └── 进程管理和日志解析
+```
+
+#### 2. 训练数据流
+```
+UI创建训练 → TrainingConfig → TrainingTask → 
+数据集配置(TOML) → latents缓存 → accelerate训练 → 
+实时日志 → 进度解析 → UI更新
+```
+
+#### 3. 核心配置类
+- `TrainingConfig` (models.py): 包含所有训练参数
+- `QwenImageConfig` (models.py): Qwen-Image特定配置
+- `TrainingTask` (models.py): 任务运行时状态
+
+
+### musubi 训练方式
+生成dataset.toml文件
+以下是配置规则
+# resolution, caption_extension, batch_size, num_repeats, enable_bucket, bucket_no_upscale should be set in either general or datasets
+# otherwise, the default values will be used for each item
+
+# general configurations
+[general]
+resolution = [960, 544]
+caption_extension = ".txt"
+batch_size = 1
+enable_bucket = true
+bucket_no_upscale = false
+
+[[datasets]]
+image_directory = "/path/to/image_dir"
+cache_directory = "/path/to/cache_directory"
+num_repeats = 1 # optional, default is 1. Number of times to repeat the dataset. Useful to balance the multiple datasets with different sizes.
+
+# other datasets can be added here. each dataset can have different configurations
+
+musubi训练之前要先缓存文本latent和Text Encoder
+第1步
+python src/musubi_tuner/qwen_image_cache_latents.py \
+    --dataset_config path/to/toml \
+    --vae path/to/vae_model
+第2步
+python src/musubi_tuner/qwen_image_cache_text_encoder_outputs.py \
+    --dataset_config path/to/toml \
+    --text_encoder path/to/text_encoder \
+    --batch_size 16
+第3步-开启训练
+accelerate launch ^
+    --num_cpu_threads_per_process 1 ^
+    --mixed_precision bf16 ^
+    src/musubi_tuner/qwen_image_train_network.py ^
+    --dit D:\AI\Qwen-model\qwen_image_bf16.safetensors ^
+    --vae D:\AI\Qwen-model\vae.safetensors ^
+    --text_encoder D:\AI\Qwen-model\qwen_2.5_vl_7b.safetensors ^
+    --dataset_config D:\AI\train\QWEN_IMAGE\event-banner-3d-v021\dataset.toml ^
+    --sdpa --mixed_precision bf16 ^
+    --timestep_sampling shift ^
+    --weighting_scheme none --discrete_flow_shift 3.0 ^
+    --optimizer_type adamw --learning_rate 1e-4 --gradient_checkpointing ^
+    --max_data_loader_n_workers 2 --persistent_data_loader_workers ^
+    --network_module musubi_tuner.networks.lora_qwen_image ^
+    --network_dim 32 ^
+    --network_alpha 16 ^
+    --max_train_epochs 8 --save_every_n_epochs 2 --seed 42 ^
+    --output_dir D:\AI\train\QWEN_IMAGE\event-banner-3d-v021\output --output_name event-banner-3d-qwen ^
+    --fp8_base --fp8_scaled ^
+    --blocks_to_swap 16 ^
+    --sample_prompts D:\AI\train\QWEN_IMAGE\event-banner-3d-v021\sample_prompts.txt ^
+    --sample_every_n_epochs 1  --sample_at_first ^
+    --logging_dir=logs ^
+
+以下是一些配置说明
+Uses qwen_image_train_network.py.
+Requires specifying --dit, --vae, and --text_encoder.
+The LoRA network for Qwen-Image (networks.lora_qwen_image) is automatically selected.
+--mixed_precision bf16 is recommended for Qwen-Image training.
+Memory saving options like --fp8_base and --fp8_scaled (for DiT), and --fp8_vl (for Text Encoder) are available.
+--gradient_checkpointing is available for memory savings.
+
+--fp8_vl is recommended for GPUs with less than 16GB of VRAM.
+--sdpa uses PyTorch's scaled dot product attention. Other options like --xformers and --flash_attn are available. flash3 cannot be used currently.
+If you specify --split_attn, the attention computation will be split, slightly reducing memory usage. Please specify --split_attn if you are using anything other than --sdpa.
+--timestep_sampling allows you to choose the sampling method for the timesteps. shift with --discrete_flow_shift is the default. qwen_shift is also available. qwen_shift is a same method during inference. It uses the dynamic shift value based on the resolution of each image (typically around 2.2 for 1328x1328 images).
+--discrete_flow_shift is set quite low for Qwen-Image during inference (as described), so a lower value than other models may be preferable.
+The appropriate settings for each parameter are unknown. Feedback is welcome.
+
+其中--dit，--vae，--text_encoder，--dataset_config，--output_dir，--sample_prompts这几个都需要动态的替换路径
+“src/musubi_tuner/qwen_image_train_network.py”这个路径要替换成我们项目中实际的程序路径，让他能够找到就行
+
+必须要说明的是musubi是一款通用的训练器，他的训练流程与逻辑不同模型之间都是公用的，只不过在数据集配置以及参数方面略有不同
+
+### 训练的开启逻辑
+用户点击开始训练按钮，musubi输出的信息要同步到训练详情的终端里，同时要保留一份train.bat或者sh以及dataset toml到相关目录下
+缓存潜空间和文本编码器的内容也要再详情终端显示
+
+
+[2025-08-14T01:35:44.222542] [缓存] INFO:musubi_tuner.qwen_image.qwen_image_utils:Setting Qwen2.5-VL to dtype: torch.bfloat16
+[2025-08-14T01:35:44.261867] [缓存] INFO:musubi_tuner.qwen_image.qwen_image_utils:Loading tokenizer from Qwen/Qwen-Image
+[2025-08-14T01:35:45.308710] [缓存] INFO:__main__:Encoding with Qwen2.5-VL
+[2025-08-14T01:35:45.309713] [缓存] INFO:musubi_tuner.cache_text_encoder_outputs:Encoding dataset [0]
+[2025-08-14T01:35:45.311714] [缓存] 
+[2025-08-14T01:35:45.966023] [缓存] 0it [00:00, ?it/s]
+[2025-08-14T01:35:46.008988] [缓存] 1it [00:00,  1.52it/s]
+[2025-08-14T01:35:46.011420] [缓存] 2it [00:00,  2.86it/s]
+[2025-08-14T01:35:46.710288] [缓存] [0m
+[2025-08-14T01:35:46.712800] [完成] 预处理完成: src/musubi_tuner/qwen_image_cache_text_encoder_outputs.py
+[2025-08-14T01:35:46.714802] 开始训练: Qwen-Image训练_1
+[2025-08-14T01:35:49.111628] E:\Program\programlearn\tagtragger\.venv\Scripts\python.exe: No module named accelerate.__main__; 'accelerate' is a package and cannot be directly executed
+[2025-08-14T01:35:49.412851] [0m
