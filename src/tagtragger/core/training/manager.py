@@ -270,7 +270,7 @@ class TrainingManager:
                         repeats=config_data.get('repeats', 1),
                         dataset_size=config_data.get('dataset_size', 0),
                         enable_bucket=config_data.get('enable_bucket', True),
-                        optimizer=config_data.get('optimizer', 'adamw8bit'),
+                        optimizer=config_data.get('optimizer', 'adamw'),
                         scheduler=config_data.get('scheduler', 'cosine'),
                         sample_prompt=config_data.get('sample_prompt', ''),
                         sample_every_n_steps=config_data.get('sample_every_n_steps', 200),
@@ -344,12 +344,36 @@ class TrainingManager:
             log_entry = f"[{timestamp}] {message}"
             task.logs.append(log_entry)
 
-            # 限制日志数量
+            # 限制内存中的日志数量
             if len(task.logs) > 1000:
                 task.logs = task.logs[-1000:]
 
+            # 保存到任务文件
             self.save_task(task)
+            
+            # 同时写入实时日志文件（追加模式）
+            try:
+                self._write_log_to_file(task_id, log_entry)
+            except Exception as e:
+                log_error(f"写入日志文件失败: {e}")
+            
             self._emit_event('task_log', {'task_id': task_id, 'message': log_entry})
+    
+    def _write_log_to_file(self, task_id: str, log_entry: str) -> None:
+        """将日志写入实时日志文件"""
+        from pathlib import Path
+        
+        # 创建日志目录
+        log_dir = Path(self.config.storage.workspace_root) / "trainings" / task_id / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 日志文件路径
+        log_file = log_dir / "training_realtime.log"
+        
+        # 追加写入日志
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(log_entry + '\n')
+            f.flush()  # 强制刷新缓冲区
 
     def _emit_event(self, event: str, data: Dict[str, Any]) -> None:
         """发送事件"""

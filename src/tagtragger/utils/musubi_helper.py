@@ -12,7 +12,7 @@ from ..utils.logger import log_info, log_error, log_success
 def get_musubi_path() -> str:
     """获取内嵌的musubi-tuner路径"""
     project_root = Path(__file__).parent.parent.parent.parent
-    return str(project_root / "third_party" / "musubi-tuner")
+    return str(project_root / "runtime" / "engines" / "musubi-tuner")
 
 
 def check_musubi_status() -> Dict[str, Any]:
@@ -23,7 +23,7 @@ def check_musubi_status() -> Dict[str, Any]:
         if not musubi_dir.exists():
             return {
                 "available": False,
-                "status": "Git子模块未初始化，请运行: git submodule update --init --recursive"
+                "status": "Musubi训练引擎未找到，请检查runtime/engines/musubi-tuner目录是否存在"
             }
         
         # 检查关键训练脚本
@@ -45,85 +45,14 @@ def check_musubi_status() -> Dict[str, Any]:
                 "status": f"训练脚本缺失: {', '.join(missing_scripts)}"
             }
         
-        # 检查Python环境和accelerate命令
-        try:
-            result = subprocess.run(
-                ["accelerate", "--help"], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
-            )
-            if result.returncode != 0:
-                return {
-                    "available": False,
-                    "status": "accelerate命令不可用，请安装: pip install accelerate"
-                }
-        except FileNotFoundError:
-            return {
-                "available": False,
-                "status": "accelerate命令未找到，请安装: pip install accelerate"
-            }
-        except subprocess.TimeoutExpired:
-            return {
-                "available": False,
-                "status": "accelerate命令检查超时"
-            }
+        # 不再检查accelerate命令，因为使用独立环境
         
-        # 检查musubi_tuner模块是否可导入
-        import sys
-        musubi_src = musubi_dir / 'src'
-        old_path = sys.path.copy()
-        try:
-            if str(musubi_src) not in sys.path:
-                sys.path.insert(0, str(musubi_src))
-            
-            import musubi_tuner
-            # 检查关键模块
-            from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_QWEN_IMAGE
-            
-        except ImportError as e:
-            sys.path = old_path
-            error_msg = str(e)
-            
-            # 提取缺失的依赖名
-            if "No module named" in error_msg:
-                if "'" in error_msg:
-                    missing_dep = error_msg.split("'")[1]
-                else:
-                    missing_dep = error_msg.replace("No module named ", "").strip()
-            else:
-                missing_dep = "未知依赖"
-            
-            # 常见依赖的特定安装建议
-            install_suggestions = {
-                "cv2": "opencv-python==4.10.0.84",
-                "torch": "torch torchvision",
-                "transformers": "transformers==4.54.1",
-                "diffusers": "diffusers==0.32.1",
-                "accelerate": "accelerate==1.6.0",
-                "numpy": "numpy",
-                "safetensors": "safetensors==0.4.5",
-                "musubi_tuner": "完整musubi-tuner依赖"
-            }
-            
-            suggested_package = install_suggestions.get(missing_dep, missing_dep)
-            
-            return {
-                "available": False,
-                "status": f"Musubi依赖缺失: {missing_dep}\n\n🔧 推荐解决方案:\n1. cd third_party/musubi-tuner\n2. pip install -e .\n\n📦 或手动安装关键包:\npip install opencv-python torch accelerate transformers diffusers safetensors\n\n⚠️ 当前缺失: {suggested_package}"
-            }
-        except Exception as e:
-            sys.path = old_path
-            return {
-                "available": False,
-                "status": f"Musubi模块检查失败: {e}"
-            }
-        finally:
-            sys.path = old_path
+        # 不再检查模块导入，因为使用独立runtime环境
+        # 前端环境不需要也不应该导入musubi_tuner模块
         
         return {
             "available": True,
-            "status": "Musubi-Tuner 就绪，所有组件正常"
+            "status": "Musubi训练引擎就绪"
         }
         
     except Exception as e:

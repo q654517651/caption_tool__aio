@@ -212,12 +212,12 @@ class TrainingCreateView:
         self.optimizer_type_dropdown = ft.Dropdown(
             label="优化器类型",
             options=[
+                ft.dropdown.Option("adamw", "AdamW"),  # 将adamw放在第一位
                 ft.dropdown.Option("adamw8bit", "AdamW 8bit"),
-                ft.dropdown.Option("adamw", "AdamW"),
                 ft.dropdown.Option("adafactor", "Adafactor"),
                 ft.dropdown.Option("lion", "Lion")
             ],
-            value="adamw8bit",
+            value="adamw",  # 改为默认使用普通adamw
             width=200
         )
 
@@ -416,6 +416,8 @@ class TrainingCreateView:
             network_alpha=network_alpha,
             repeats=repeats,
             enable_bucket=self.enable_bucket_switch.value,
+            optimizer=self.optimizer_type_dropdown.value,  # 修复：设置优化器参数
+            scheduler=self.scheduler_dropdown.value if hasattr(self, 'scheduler_dropdown') and self.scheduler_dropdown.value else "cosine",  # 添加调度器参数
             save_every_n_epochs=save_every_n_epochs,
             max_data_loader_n_workers=max_data_loader_n_workers,
             persistent_data_loader_workers=self.persistent_data_loader_workers_switch.value,

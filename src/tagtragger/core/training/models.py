@@ -32,7 +32,7 @@ class QwenImageConfig:
     timestep_sampling: str = "shift"
     weighting_scheme: str = "none"
     discrete_flow_shift: float = 3.0
-    optimizer_type: str = "adamw8bit"
+    optimizer_type: str = "adamw"  # 改为普通adamw，避免8bit优化器问题
     gradient_checkpointing: bool = True
     fp8_base: bool = False
     fp8_scaled: bool = False
@@ -64,7 +64,7 @@ class TrainingConfig:
     enable_bucket: bool = True  # 添加缺失的enable_bucket字段
     
     # 优化器和调度器
-    optimizer: str = "adamw8bit"
+    optimizer: str = "adamw"  # 改为普通adamw，避免8bit优化器问题
     scheduler: str = "cosine"
     
     # 采样配置

@@ -4,6 +4,7 @@ Training View - 新架构的训练管理视图
 
 import flet as ft
 from typing import Callable, List, Dict, Any
+from datetime import datetime
 from ....core.training.models import TrainingConfig, TrainingType, TrainingState
 
 class TrainingListView:
@@ -410,10 +411,32 @@ class TrainingDetailView:
             border_radius=5
         )
         
+        # 日志操作按钮
+        log_actions = ft.Row([
+            ft.ElevatedButton(
+                "导出日志",
+                icon=ft.Icons.DOWNLOAD,
+                on_click=self._export_logs,
+                style=ft.ButtonStyle(color=ft.Colors.BLUE)
+            ),
+            ft.ElevatedButton(
+                "清空显示",
+                icon=ft.Icons.CLEAR,
+                on_click=self._clear_log_display,
+                style=ft.ButtonStyle(color=ft.Colors.ORANGE)
+            ),
+            ft.Container(expand=True),  # 填充空间
+            ft.Text(f"日志行数: 0", key="log_count_text")
+        ])
+        
         # 日志区域
         log_area = ft.Container(
             content=ft.Column([
-                ft.Text("训练日志", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text("训练日志", size=16, weight=ft.FontWeight.BOLD),
+                    ft.Container(expand=True),
+                ]),
+                log_actions,
                 ft.Container(
                     content=self.log_display,
                     expand=True,
@@ -421,7 +444,7 @@ class TrainingDetailView:
                     border_radius=5,
                     padding=5
                 )
-            ]),
+            ], spacing=10),
             expand=True,
             padding=ft.padding.all(20)
         )
@@ -510,6 +533,9 @@ class TrainingDetailView:
             extent_offset=len(new_logs)
         )
         
+        # 更新日志计数
+        self._update_log_count()
+        
         if self.page:
             self.page.update()
     
@@ -521,5 +547,109 @@ class TrainingDetailView:
             self.update_status(task.state.value)
             self.update_progress(task.progress, task.current_step, task.total_steps, task.eta_seconds)
             self._update_button_state()
+            
+            # 加载历史日志
+            self._load_historical_logs(task)
         
         return self.root_container
+    
+    def _load_historical_logs(self, task):
+        """加载历史日志"""
+        if task.logs:
+            # 清空当前显示
+            self.log_display.value = ""
+            
+            # 加载所有历史日志
+            for log_entry in task.logs:
+                # 不重复添加时间戳，因为历史日志已经包含时间戳
+                self.log_display.value += log_entry + "\n"
+            
+            # 滚动到底部
+            if self.log_display.value:
+                self.log_display.selection = ft.TextSelection(
+                    base_offset=len(self.log_display.value),
+                    extent_offset=len(self.log_display.value)
+                )
+            
+            # 更新UI和日志计数
+            self._update_log_count()
+            if self.page:
+                self.page.update()
+    
+    def _update_log_count(self):
+        """更新日志行数显示"""
+        try:
+            lines = len([line for line in self.log_display.value.split('\n') if line.strip()])
+            log_count_text = None
+            
+            # 查找日志计数文本组件
+            def find_log_count_text(control):
+                if hasattr(control, 'key') and control.key == "log_count_text":
+                    return control
+                if hasattr(control, 'controls'):
+                    for child in control.controls:
+                        result = find_log_count_text(child)
+                        if result:
+                            return result
+                return None
+            
+            if self.root_container:
+                log_count_text = find_log_count_text(self.root_container)
+            
+            if log_count_text:
+                log_count_text.value = f"日志行数: {lines}"
+                
+        except Exception as e:
+            pass  # 忽略更新错误
+    
+    def _export_logs(self, e):
+        """导出日志到文件"""
+        try:
+            task = self.training_manager.get_task(self.task_id)
+            if not task:
+                self.toast_service.show("任务不存在", "error")
+                return
+            
+            # 创建日志文件内容
+            log_content = []
+            log_content.append(f"训练任务日志导出")
+            log_content.append(f"任务名称: {task.config.name}")
+            log_content.append(f"任务ID: {task.id}")
+            log_content.append(f"导出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            log_content.append("=" * 50)
+            log_content.append("")
+            
+            # 添加所有日志条目
+            if task.logs:
+                log_content.extend(task.logs)
+            else:
+                log_content.append("无日志记录")
+            
+            # 保存到文件
+            import os
+            from pathlib import Path
+            
+            # 创建日志导出目录
+            export_dir = Path(self.training_manager.config.storage.workspace_root) / "logs"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 生成文件名
+            filename = f"training_log_{task.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            filepath = export_dir / filename
+            
+            # 写入文件
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(log_content))
+            
+            self.toast_service.show(f"日志已导出到: {filepath}", "success")
+            
+        except Exception as ex:
+            self.toast_service.show(f"导出日志失败: {str(ex)}", "error")
+    
+    def _clear_log_display(self, e):
+        """清空日志显示（不删除持久化数据）"""
+        self.log_display.value = ""
+        self._update_log_count()
+        if self.page:
+            self.page.update()
+        self.toast_service.show("已清空日志显示", "info")

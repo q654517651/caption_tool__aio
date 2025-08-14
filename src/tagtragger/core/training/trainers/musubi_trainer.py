@@ -15,6 +15,7 @@ import json
 import platform
 import re
 import shutil
+import psutil
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 from dataclasses import asdict
@@ -35,49 +36,51 @@ class MusubiTrainer:
         self._proc: Optional[subprocess.Popen] = None
         self._id = uuid.uuid4().hex
         
+        # 注册程序退出时的清理函数
+        import atexit
+        atexit.register(self._emergency_cleanup)
+        
+    def get_runtime_path(self) -> Path:
+        """获取训练运行时环境路径"""
+        project_root = Path(__file__).parent.parent.parent.parent.parent.parent
+        runtime_dir = project_root / "runtime"
+        
+        if not runtime_dir.exists():
+            raise TrainingError("训练运行时环境不存在，请检查runtime目录")
+        
+        return runtime_dir
+    
     def get_musubi_path(self) -> Path:
         """获取内嵌的musubi-tuner路径"""
-        project_root = Path(__file__).parent.parent.parent.parent.parent.parent
-        musubi_dir = project_root / "third_party" / "musubi-tuner"
+        runtime_dir = self.get_runtime_path()
+        musubi_dir = runtime_dir / "engines" / "musubi-tuner"
         
         if not musubi_dir.exists():
-            raise TrainingError("Musubi-Tuner子模块不存在，请运行: git submodule update --init --recursive")
+            raise TrainingError("Musubi-Tuner引擎不存在，请检查runtime/engines/musubi-tuner目录")
         
         return musubi_dir
     
+    def get_runtime_python(self) -> Path:
+        """获取runtime中的嵌入式Python解释器路径"""
+        runtime_dir = self.get_runtime_path()
+        python_exe = runtime_dir / "python" / "python.exe"
+        
+        if not python_exe.exists():
+            raise TrainingError(
+                f"嵌入式Python环境未安装: {python_exe}\n"
+                f"请确保runtime/python/目录包含完整的Python环境"
+            )
+        
+        return python_exe
+    
     def _get_accelerate_cmd(self) -> List[str]:
-        """获取正确的accelerate命令"""
-        # 首先尝试直接调用accelerate命令
-        if shutil.which("accelerate"):
-            return ["accelerate"]
-        
-        # 如果直接命令不可用，尝试通过Python模块调用
-        # 但需要避免使用 -m accelerate.__main__ 
-        try:
-            import accelerate
-            # 尝试找到accelerate脚本的位置
-            accelerate_path = Path(accelerate.__file__).parent.parent / "Scripts" / "accelerate.exe"
-            if accelerate_path.exists():
-                return [str(accelerate_path)]
-        except ImportError:
-            pass
-        
-        # 最后尝试在当前Python环境的Scripts目录查找
-        python_dir = Path(sys.executable).parent
-        accelerate_exe = python_dir / "accelerate.exe"  # Windows
-        if accelerate_exe.exists():
-            return [str(accelerate_exe)]
-        
-        accelerate_script = python_dir / "accelerate"  # Linux/Mac
-        if accelerate_script.exists():
-            return [str(accelerate_script)]
-        
-        # 如果都找不到，回退到Python模块调用（可能会失败，但这是最后的选择）
-        log_error("警告: 无法找到accelerate命令，使用Python模块调用，可能会失败")
-        return [sys.executable, "-c", "import accelerate.commands.launch; accelerate.commands.launch.main()"]
+        """获取正确的accelerate命令，使用runtime Python环境"""
+        # 使用runtime Python环境中的accelerate
+        runtime_python = self.get_runtime_python()
+        return [str(runtime_python), "-m", "accelerate"]
         
     def _get_script_path(self, training_type: TrainingType) -> str:
-        """获取训练脚本路径"""
+        """获取训练脚本路径（相对于musubi目录）"""
         if training_type not in TRAINING_PRESETS:
             raise TrainingError(f"不支持的训练类型: {training_type}")
             
@@ -88,7 +91,8 @@ class MusubiTrainer:
         if not script_path.exists():
             raise TrainingError(f"训练脚本不存在: {script_path}")
             
-        return str(script_path)
+        # 返回相对路径（相对于musubi目录）
+        return preset["script_path"]
     
     def _create_training_workspace(self, task: TrainingTask) -> Path:
         """创建训练工作空间目录"""
@@ -656,18 +660,37 @@ echo "====================================="
             # 设置UTF-8编码，避免Windows GBK编码问题
             env['PYTHONIOENCODING'] = 'utf-8'
             
-            self._proc = subprocess.Popen(
-                cmd,
-                cwd=str(musubi_dir),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                errors='replace',  # 遇到无法解码的字符时替换为?
-                bufsize=1,
-                universal_newlines=True
-            )
+            # 创建进程，确保能够管理整个进程树
+            if os.name == 'nt':  # Windows
+                # Windows上使用CREATE_NEW_PROCESS_GROUP
+                self._proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(musubi_dir),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    bufsize=1,
+                    universal_newlines=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            else:  # Unix/Linux
+                # Unix/Linux上使用新进程组
+                self._proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(musubi_dir),
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    bufsize=1,
+                    universal_newlines=True,
+                    preexec_fn=os.setsid  # 创建新会话，便于管理进程组
+                )
 
             # 实时读取输出并监控进度
             return self._monitor_training(task, progress_callback, log_callback)
@@ -802,26 +825,131 @@ echo "====================================="
             return None
 
     def cancel_training(self):
-        """取消训练"""
+        """取消训练 - 强制终止所有相关进程"""
         if self._proc and self._proc.poll() is None:
             try:
                 log_info("正在取消训练...")
-                if os.name == 'nt':  # Windows
-                    self._proc.terminate()
-                else:  # Unix/Linux
-                    self._proc.send_signal(signal.SIGTERM)
                 
-                # 等待进程结束
+                # 获取主进程PID
+                main_pid = self._proc.pid
+                log_info(f"主训练进程PID: {main_pid}")
+                
+                # 方法1: 尝试优雅终止进程树
                 try:
-                    self._proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self._proc.kill()
+                    parent = psutil.Process(main_pid)
+                    children = parent.children(recursive=True)
                     
-                log_info("训练已取消")
+                    log_info(f"发现 {len(children)} 个子进程")
+                    
+                    # 首先尝试优雅终止所有子进程
+                    for child in children:
+                        try:
+                            log_info(f"终止子进程: PID={child.pid}, 名称={child.name()}")
+                            child.terminate()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    
+                    # 终止主进程
+                    parent.terminate()
+                    
+                    # 等待进程结束
+                    gone, alive = psutil.wait_procs(children + [parent], timeout=10)
+                    
+                    # 强制杀死仍然存活的进程
+                    if alive:
+                        log_info(f"强制杀死 {len(alive)} 个未响应的进程")
+                        for proc in alive:
+                            try:
+                                log_info(f"强制杀死进程: PID={proc.pid}, 名称={proc.name()}")
+                                proc.kill()
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+                        
+                        # 再次等待
+                        psutil.wait_procs(alive, timeout=5)
+                    
+                except psutil.NoSuchProcess:
+                    log_info("主进程已不存在")
+                except Exception as e:
+                    log_error(f"使用psutil终止进程失败: {e}")
+                    
+                    # 方法2: 回退到原始的进程终止方法
+                    log_info("回退到基础进程终止方法")
+                    try:
+                        if os.name == 'nt':  # Windows
+                            # Windows上强制终止进程树
+                            subprocess.run([
+                                "taskkill", "/F", "/T", "/PID", str(main_pid)
+                            ], capture_output=True, check=False)
+                        else:  # Unix/Linux
+                            # 发送SIGTERM到进程组
+                            os.killpg(os.getpgid(main_pid), signal.SIGTERM)
+                            time.sleep(2)
+                            # 如果还未结束，发送SIGKILL
+                            try:
+                                os.killpg(os.getpgid(main_pid), signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                    except Exception as e2:
+                        log_error(f"回退方法也失败: {e2}")
+                
+                # 方法3: 额外安全检查 - 查找可能的训练相关进程
+                try:
+                    self._cleanup_training_processes()
+                except Exception as e:
+                    log_error(f"清理训练进程时出错: {e}")
+                
+                log_info("训练取消完成")
+                
             except Exception as e:
                 log_error(f"取消训练时出错: {e}")
             finally:
                 self._proc = None
+    
+    def _cleanup_training_processes(self):
+        """清理可能残留的训练相关进程"""
+        try:
+            # 查找可能的训练进程（基于进程名称和命令行）
+            training_keywords = [
+                "qwen_image_train_network.py",
+                "musubi_tuner",
+                "accelerate",
+                "torch.distributed.run"
+            ]
+            
+            killed_count = 0
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    cmdline = ' '.join(proc.info['cmdline'] or [])
+                    
+                    # 检查是否为训练相关进程
+                    is_training_proc = any(keyword in cmdline.lower() for keyword in training_keywords)
+                    
+                    if is_training_proc:
+                        # 额外检查确保不是当前Python解释器进程
+                        if proc.pid != os.getpid():
+                            log_info(f"发现可能的残留训练进程: PID={proc.pid}, 命令={cmdline[:100]}...")
+                            proc.kill()
+                            killed_count += 1
+                            
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            
+            if killed_count > 0:
+                log_info(f"清理了 {killed_count} 个残留的训练进程")
+                
+        except Exception as e:
+            log_error(f"清理进程时出错: {e}")
+    
+    def _emergency_cleanup(self):
+        """程序退出时的紧急清理"""
+        try:
+            if self._proc and self._proc.poll() is None:
+                log_info("程序退出时发现正在运行的训练，执行紧急清理")
+                self.cancel_training()
+        except Exception as e:
+            # 静默处理，避免程序退出时出现错误
+            pass
 
     def is_available(self) -> bool:
         """检查Musubi-Tuner是否可用"""
